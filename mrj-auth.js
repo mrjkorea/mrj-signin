@@ -184,6 +184,7 @@
           renderLogin_(blank.message, entered);
           return;
         }
+        renderStatus_("Checking your ID…");
         send_({ action: "login", id: id, password: password }, function (data) {
           finish_(data.id || id, data.token, data.progress);
         }, function (msg) {
@@ -218,6 +219,7 @@
           renderCreate_(match.message, entered);
           return;
         }
+        renderStatus_("Making your ID…");
         send_({ action: "register", id: id, password: password }, function (data) {
           finish_(data.id || id, data.token, data.progress);
         }, function (msg) {
