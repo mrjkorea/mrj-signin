@@ -46,18 +46,46 @@
     observer.observe(document.body, { childList: true, subtree: true });
   }
 
+  function isNameCard(node) {
+    if (!node || node.nodeType !== 1) return false;
+    if (node.id === "mrj-auth-gate" || (node.closest && node.closest("#mrj-auth-gate, .mrj-auth"))) return false;
+    var text = node.textContent || "";
+    if (text.indexOf("What's your name") !== -1 || text.indexOf("What’s your name") !== -1) return true;
+    return !!(node.querySelector && node.querySelector("#lf-input"));
+  }
+
+  function lockBuiltNameCards(id) {
+    if (!id || !document.querySelectorAll) return;
+    var nodes = document.querySelectorAll(".name-card, form");
+    for (var i = 0; i < nodes.length; i++) {
+      var card = nodes[i];
+      if (!isNameCard(card)) continue;
+      var input = card.querySelector("input[type='text'], input:not([type])");
+      if (input) {
+        input.value = id;
+        input.readOnly = true;
+      }
+      var button = card.querySelector("button.go, button[type='submit']");
+      if (button) button.click();
+      card.hidden = true;
+    }
+  }
+
   function onReady(info) {
     document.documentElement.classList.remove("mrj-auth-locked");
     gate.hidden = true;
     window.MRJ_STUDENT = window.MRJ_AUTH.student();
     info = info || {};
+    var id = info.id != null ? info.id : window.MRJ_STUDENT;
+    lockBuiltNameCards(id);
     document.dispatchEvent(new CustomEvent("mrj-auth-ready", {
       bubbles: true,
       detail: {
-        id: info.id != null ? info.id : window.MRJ_STUDENT,
+        id: id,
         progress: info.progress != null ? info.progress : []
       }
     }));
+    setTimeout(function () { lockBuiltNameCards(id); }, 400);
   }
 
   var gate = null;
