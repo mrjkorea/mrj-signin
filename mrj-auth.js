@@ -313,6 +313,13 @@
     var status = el_("p", "mrj-auth-status");
     status.textContent = text;
     rootEl.appendChild(status);
+    var again = button_("Try again", "mrj-auth-back");
+    again.addEventListener("click", function () {
+      viewGen += 1;
+      busy = false;
+      renderDoors_("Didn't save. Try again.");
+    });
+    rootEl.appendChild(again);
   }
 
   function send_(body, onOk, showError) {
@@ -330,7 +337,7 @@
     }).catch(function () {
       if (gen !== viewGen) return;
       busy = false;
-      showError("Could not reach the sign-in book. Try again.");
+      showError("Didn't save. Try again.");
     });
   }
 
@@ -350,16 +357,26 @@
   }
 
   function post_(body) {
-    return fetch(ENDPOINT, {
+    var opts = {
       method: "POST",
       redirect: "follow",
       headers: { "Content-Type": "text/plain;charset=utf-8" },
       body: JSON.stringify(body)
-    }).then(function (res) {
+    };
+    var ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+    if (ctrl) opts.signal = ctrl.signal;
+    var timedOut = new Promise(function (_, reject) {
+      setTimeout(function () {
+        if (ctrl) ctrl.abort();
+        reject(new Error("timeout"));
+      }, 12000);
+    });
+    var req = fetch(ENDPOINT, opts).then(function (res) {
       return res.text();
     }).then(function (text) {
       return JSON.parse(text);
     });
+    return Promise.race([req, timedOut]);
   }
 
   function errorText_(data) {
