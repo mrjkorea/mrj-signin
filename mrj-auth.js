@@ -7,7 +7,7 @@
 (function (global) {
   "use strict";
 
-  var AUTH_VERSION = "20261006-resilient";
+  var AUTH_VERSION = "20261007-place";
   var ENDPOINT = "https://script.google.com/macros/s/AKfycbwtJTUO3gbcMrlAwsn1feWxyp7Rw2cxpfe1bOT9v2rxmQHa2Tlc6pFNWAjU6ZAdlD6kFQ/exec";
   var SESSION_KEY = "mrj.auth.session";
   var REQUEST_TIMEOUT_MS = 30000;
@@ -20,6 +20,7 @@
     id_taken: "That ID is already used. Log in instead.",
     server_busy: "The sign-in server is busy, trying again…",
     checking: "Checking your ID…",
+    loading_place: "Loading your place…",
     still_signing_in: "Still signing you in… You can wait here or go back and try again in a moment.",
     resume_busy: "The sign-in server is slow. You are signed in on this device — we are double-checking in the background."
   };
@@ -522,7 +523,11 @@
         activeLoginFlight = null;
         busy = false;
         setBusy_(false);
-        finish_(data.id || (body && body.id), data.token, data.progress);
+        if (body && (body.action === "login" || body.action === "register")) {
+          loadPlace_(data.id || body.id, data.token);
+        } else {
+          finish_(data.id || (body && body.id), data.token, data.progress);
+        }
         return;
       }
       if (!stillCurrent) return;
@@ -537,6 +542,19 @@
       busy = false;
       setBusy_(false);
       showError(MESSAGES.server_busy.replace("trying again…", "Please try again in a moment."));
+    });
+  }
+
+
+  function loadPlace_(id, tokenValue) {
+    renderStatus_(MESSAGES.loading_place);
+    post_({ action: "progress", id: id, token: tokenValue }).then(function (data) {
+      var rows = data && Array.isArray(data.progress) ? data.progress : [];
+      var nextId = data && data.id ? data.id : id;
+      var nextToken = data && data.token ? data.token : tokenValue;
+      finish_(nextId, nextToken, rows);
+    }).catch(function () {
+      finish_(id, tokenValue, []);
     });
   }
 
