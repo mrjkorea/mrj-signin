@@ -7,15 +7,30 @@
 (function (global) {
   "use strict";
 
+  var AUTH_VERSION = "20261006-resilient";
   var ENDPOINT = "https://script.google.com/macros/s/AKfycbwtJTUO3gbcMrlAwsn1feWxyp7Rw2cxpfe1bOT9v2rxmQHa2Tlc6pFNWAjU6ZAdlD6kFQ/exec";
   var SESSION_KEY = "mrj.auth.session";
+  var REQUEST_TIMEOUT_MS = 30000;
 
   var MESSAGES = {
     blank: "Type an ID and a password.",
     mismatch: "Those passwords do not match.",
     user_does_not_exist: "User does not exist.",
     wrong_password: "Wrong password.",
-    id_taken: "That ID is already used. Log in instead."
+    id_taken: "That ID is already used. Log in instead.",
+    server_busy: "The sign-in server is busy, trying again…",
+    checking: "Checking your ID…",
+    still_signing_in: "Still signing you in… You can wait here or go back and try again in a moment.",
+    resume_busy: "The sign-in server is slow. You are signed in on this device — we are double-checking in the background."
+  };
+
+  var NO_RETRY_ERRORS = {
+    blank: true,
+    wrong_password: true,
+    user_does_not_exist: true,
+    id_taken: true,
+    password_mismatch: true,
+    bad_token: true
   };
 
   function idKey(id) {
@@ -102,8 +117,128 @@
   var state = { id: "", token: "", progress: [] };
   var viewGen = 0;
   var busy = false;
+  var loginFlightSeq = 0;
+  var activeLoginFlight = null;
+  var storageListenerInstalled = false;
+
+  function delay_(ms) {
+    return new Promise(function (resolve) {
+      setTimeout(resolve, ms);
+    });
+  }
+
+  function parseJsonResponse_(text) {
+    var trimmed = String(text == null ? "" : text).trim();
+    if (!trimmed || (trimmed.charAt(0) !== "{" && trimmed.charAt(0) !== "[")) {
+      var err = new Error("bad_response");
+      err.kind = "bad_response";
+      throw err;
+    }
+    try {
+      return JSON.parse(trimmed);
+    } catch (parseErr) {
+      var err = new Error("bad_response");
+      err.kind = "bad_response";
+      throw err;
+    }
+  }
+
+  function postOnce_(body, timeoutMs) {
+    var opts = {
+      method: "POST",
+      redirect: "follow",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify(body)
+    };
+    var ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+    if (ctrl) opts.signal = ctrl.signal;
+    var ms = timeoutMs == null ? REQUEST_TIMEOUT_MS : timeoutMs;
+    var timedOut = new Promise(function (_, reject) {
+      setTimeout(function () {
+        if (ctrl) ctrl.abort();
+        var err = new Error("timeout");
+        err.kind = "timeout";
+        reject(err);
+      }, ms);
+    });
+    var req = fetch(ENDPOINT, opts).then(function (res) {
+      return res.text();
+    }).then(function (text) {
+      return parseJsonResponse_(text);
+    });
+    return Promise.race([req, timedOut]);
+  }
+
+  function shouldRetryResponse_(data) {
+    if (!data || typeof data !== "object") return true;
+    if (data.ok) return false;
+    var code = data.error == null ? "" : String(data.error);
+    if (NO_RETRY_ERRORS[code]) return false;
+    return true;
+  }
+
+  function retryPlan_(action) {
+    if (action === "login" || action === "register") {
+      return { attempts: 3, delays: [0, 2000, 4000] };
+    }
+    return { attempts: 2, delays: [0, 1500] };
+  }
+
+  function post_(body, hook) {
+    var action = body && body.action ? String(body.action) : "";
+    var plan = retryPlan_(action);
+    function runAttempt(index) {
+      return postOnce_(body, REQUEST_TIMEOUT_MS).then(function (data) {
+        if (!shouldRetryResponse_(data) || index >= plan.attempts - 1) return data;
+        if (hook && typeof hook.onRetry === "function") hook.onRetry(index + 1, MESSAGES.server_busy);
+        return delay_(plan.delays[index + 1] || 1500).then(function () {
+          return runAttempt(index + 1);
+        });
+      }).catch(function (err) {
+        if (index >= plan.attempts - 1) throw err;
+        if (hook && typeof hook.onRetry === "function") hook.onRetry(index + 1, MESSAGES.server_busy);
+        return delay_(plan.delays[index + 1] || 1500).then(function () {
+          return runAttempt(index + 1);
+        });
+      });
+    }
+    return runAttempt(0);
+  }
+
+  function installStorageListener_() {
+    if (storageListenerInstalled || !global.addEventListener) return;
+    storageListenerInstalled = true;
+    global.addEventListener("storage", function (event) {
+      if (!event || event.key !== SESSION_KEY || !event.newValue) return;
+      try {
+        var parsed = JSON.parse(event.newValue);
+        if (!parsed || !parsed.id || !parsed.token) return;
+        if (!state.id || rules.idKey(parsed.id) !== rules.idKey(state.id)) return;
+        if (String(parsed.token) === String(state.token)) return;
+        state.token = String(parsed.token);
+        saveSession_();
+        if (state.id && rootEl) {
+          post_({ action: "progress", id: state.id, token: state.token }).then(function (data) {
+            if (data && data.ok) {
+              if (data.token) state.token = String(data.token);
+              state.progress = Array.isArray(data.progress) ? data.progress : state.progress;
+              saveSession_();
+              if (typeof options.onReady === "function") {
+                options.onReady({
+                  id: state.id,
+                  token: state.token,
+                  progress: state.progress
+                });
+              }
+            }
+          }).catch(function () {});
+        }
+      } catch (ignore) {}
+    });
+  }
 
   function mount(el, opts) {
+    installStorageListener_();
     var node = resolveEl_(el);
     if (!node) return;
     rootEl = node;
@@ -117,9 +252,18 @@
       renderDoors_();
       return;
     }
+    resumeSession_(saved);
+  }
+
+  function resumeSession_(saved) {
     var gen = viewGen;
-    renderStatus_("Checking your ID…");
-    post_({ action: "progress", id: saved.id, token: saved.token }).then(function (data) {
+    renderStatus_(MESSAGES.checking, { resume: true });
+    post_({ action: "progress", id: saved.id, token: saved.token }, {
+      onRetry: function () {
+        if (gen !== viewGen) return;
+        renderStatus_(MESSAGES.server_busy, { resume: true });
+      }
+    }).then(function (data) {
       if (gen !== viewGen) return;
       if (data && data.ok) {
         finish_(data.id || saved.id, data.token || saved.token, data.progress);
@@ -130,11 +274,40 @@
         renderDoors_();
         return;
       }
-      renderDoors_("Could not check the sign-in book. Try again.");
+      optimisticResume_(saved, gen);
     }).catch(function () {
       if (gen !== viewGen) return;
-      renderDoors_("Could not check the sign-in book. Try again.");
+      optimisticResume_(saved, gen);
     });
+  }
+
+  function optimisticResume_(saved, gen) {
+    finish_(saved.id, saved.token, []);
+    if (rootEl) {
+      var note = el_("p", "mrj-auth-status");
+      note.textContent = MESSAGES.resume_busy;
+      rootEl.insertBefore(note, rootEl.firstChild);
+    }
+    post_({ action: "progress", id: saved.id, token: saved.token }).then(function (data) {
+      if (sessionRejected_(data)) {
+        signOut();
+        return;
+      }
+      if (!data || !data.ok) return;
+      state.id = data.id || saved.id;
+      state.token = data.token || saved.token;
+      state.progress = Array.isArray(data.progress) ? data.progress : [];
+      saveSession_();
+      if (gen !== viewGen) return;
+      renderSignedIn_();
+      if (typeof options.onReady === "function") {
+        options.onReady({
+          id: state.id,
+          token: state.token,
+          progress: state.progress
+        });
+      }
+    }).catch(function () {});
   }
 
   function student() {
@@ -148,6 +321,7 @@
   function signOut() {
     viewGen += 1;
     busy = false;
+    activeLoginFlight = null;
     state = { id: "", token: "", progress: [] };
     clearSession_();
     if (rootEl) renderDoors_();
@@ -184,7 +358,7 @@
           renderLogin_(blank.message, entered);
           return;
         }
-        renderStatus_("Checking your ID…");
+        renderStatus_(MESSAGES.checking);
         send_({ action: "login", id: id, password: password }, function (data) {
           finish_(data.id || id, data.token, data.progress);
         }, function (msg) {
@@ -307,7 +481,7 @@
     rootEl.appendChild(out);
   }
 
-  function renderStatus_(text) {
+  function renderStatus_(text, meta) {
     if (!rootEl) return;
     clear_(rootEl);
     var status = el_("p", "mrj-auth-status");
@@ -315,6 +489,14 @@
     rootEl.appendChild(status);
     var again = button_("Try again", "mrj-auth-back");
     again.addEventListener("click", function () {
+      if (activeLoginFlight) {
+        renderDoors_(MESSAGES.still_signing_in);
+        return;
+      }
+      if (meta && meta.resume) {
+        renderDoors_("Could not check the sign-in book. Try again.");
+        return;
+      }
       viewGen += 1;
       busy = false;
       renderDoors_("Didn't save. Try again.");
@@ -323,21 +505,38 @@
   }
 
   function send_(body, onOk, showError) {
-    var gen = viewGen;
+    var flightId = ++loginFlightSeq;
+    activeLoginFlight = { id: flightId, body: body };
     busy = true;
     setBusy_(true);
-    post_(body).then(function (data) {
-      if (gen !== viewGen) return;
-      busy = false;
+    post_(body, {
+      onRetry: function () {
+        if (activeLoginFlight && activeLoginFlight.id === flightId) {
+          renderStatus_(MESSAGES.server_busy);
+        }
+      }
+    }).then(function (data) {
+      var stillCurrent = activeLoginFlight && activeLoginFlight.id === flightId;
       if (data && data.ok && data.token) {
-        onOk(data);
+        if (activeLoginFlight && activeLoginFlight.id !== flightId) return;
+        activeLoginFlight = null;
+        busy = false;
+        setBusy_(false);
+        finish_(data.id || (body && body.id), data.token, data.progress);
         return;
       }
+      if (!stillCurrent) return;
+      activeLoginFlight = null;
+      busy = false;
+      setBusy_(false);
       showError(errorText_(data));
     }).catch(function () {
-      if (gen !== viewGen) return;
+      var stillCurrent = activeLoginFlight && activeLoginFlight.id === flightId;
+      if (!stillCurrent) return;
+      activeLoginFlight = null;
       busy = false;
-      showError("Didn't save. Try again.");
+      setBusy_(false);
+      showError(MESSAGES.server_busy.replace("trying again…", "Please try again in a moment."));
     });
   }
 
@@ -356,33 +555,11 @@
     }
   }
 
-  function post_(body) {
-    var opts = {
-      method: "POST",
-      redirect: "follow",
-      headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: JSON.stringify(body)
-    };
-    var ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
-    if (ctrl) opts.signal = ctrl.signal;
-    var timedOut = new Promise(function (_, reject) {
-      setTimeout(function () {
-        if (ctrl) ctrl.abort();
-        reject(new Error("timeout"));
-      }, 12000);
-    });
-    var req = fetch(ENDPOINT, opts).then(function (res) {
-      return res.text();
-    }).then(function (text) {
-      return JSON.parse(text);
-    });
-    return Promise.race([req, timedOut]);
-  }
-
   function errorText_(data) {
     if (data && data.message) return String(data.message);
     var code = data && data.error;
     if (code && rules.MESSAGES[code]) return rules.MESSAGES[code];
+    if (code && MESSAGES[code]) return MESSAGES[code];
     return "Something went wrong.";
   }
 
@@ -477,7 +654,8 @@
     });
   }
 
-  global.MRJ_AUTH = {
+  var api = {
+    AUTH_VERSION: AUTH_VERSION,
     ENDPOINT: ENDPOINT,
     mount: mount,
     student: student,
@@ -485,4 +663,17 @@
     signOut: signOut,
     noteScore: noteScore
   };
+
+  if (global.MRJ_AUTH_TEST_MODE) {
+    api._test = {
+      post: post_,
+      postOnce: postOnce_,
+      send: send_,
+      sessionRejected: sessionRejected_,
+      REQUEST_TIMEOUT_MS: REQUEST_TIMEOUT_MS,
+      AUTH_VERSION: AUTH_VERSION
+    };
+  }
+
+  global.MRJ_AUTH = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);
