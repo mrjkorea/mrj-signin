@@ -482,12 +482,24 @@
     rootEl.appendChild(out);
   }
 
+  function waitBar_() {
+    var bar = el_("div", "mrj-auth-wait-bar");
+    bar.setAttribute("role", "progressbar");
+    bar.setAttribute("aria-label", "Working");
+    return bar;
+  }
+
   function renderStatus_(text, meta) {
     if (!rootEl) return;
     clear_(rootEl);
+    var wait = el_("div", "mrj-auth-wait");
+    wait.setAttribute("aria-busy", "true");
     var status = el_("p", "mrj-auth-status");
+    status.setAttribute("aria-live", "polite");
     status.textContent = text;
-    rootEl.appendChild(status);
+    wait.appendChild(status);
+    wait.appendChild(waitBar_());
+    rootEl.appendChild(wait);
     var again = button_("Try again", "mrj-auth-back");
     again.addEventListener("click", function () {
       if (activeLoginFlight) {
