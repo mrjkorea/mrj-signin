@@ -71,7 +71,7 @@ function jsonResponse(obj, delayMs) {
 describe("mrj-auth HTTP client", () => {
   it("exposes version marker", () => {
     const { auth } = loadAuth(() => Promise.resolve({ text: () => Promise.resolve("{}") }));
-    assert.equal(auth.AUTH_VERSION, "20261006-resilient");
+    assert.equal(auth.AUTH_VERSION, "20261007-place");
   });
 
   it("waits through a 15s delay then succeeds", async () => {
