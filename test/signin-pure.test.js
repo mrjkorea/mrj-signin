@@ -21,6 +21,12 @@ describe("mergeProgressJson", () => {
     assert.equal(out2, incoming);
   });
 
+  it("keeps stored decodable data when incoming has no books", () => {
+    const stored = JSON.stringify({ v: 2, rev: 1, books: { b1: { passed: true } } });
+    const out = pure.mergeProgressJson(stored, "{}", "decodable");
+    assert.equal(out, stored);
+  });
+
   it("merges decodable books", () => {
     const stored = JSON.stringify({
       v: 2,

@@ -18,8 +18,9 @@ var PROGRESS_DEFAULT_LIMIT = 500;
 var PROGRESS_MAX_LIMIT = 1000;
 var CHUNK_CHAR_MAX = 40000;
 var MAX_PROGRESS_CHUNKS = 12;
-var BACKFILL_BATCH_ROWS = 800;
+var METRICS_FALLBACK_TAIL = 12000;
 var BACKFILL_PROP = "backfill_score_index_cursor";
+var BACKFILL_TIME_BUDGET_MS = 270000;
 
 var ACCOUNT_HEADERS = ["id_display", "id_key", "password", "created_at", "last_login", "token"];
 var SCORE_HEADERS = ["id_key", "program", "item_id", "score_value", "score_max", "score_pct", "local_date", "updated_at"];
@@ -126,7 +127,7 @@ function progress_(body) {
   if (limit > PROGRESS_MAX_LIMIT) limit = PROGRESS_MAX_LIMIT;
 
   try {
-    var all = loadProgressRows_(book_(), gate.id_key, program);
+    var all = loadProgressRowsWithFallback_(book_(), gate.id_key, program);
     var page = pageProgressRows_(all, offset, limit);
     return {
       ok: true,
@@ -170,7 +171,7 @@ function noteScore_(body) {
       updated_at: now
     });
     var progFilter = program.trim();
-    var rows = loadProgressRows_(ss, gate.id_key, progFilter);
+    var rows = loadProgressRowsWithFallback_(ss, gate.id_key, progFilter);
     var page = pageProgressRows_(rows, 0, PROGRESS_DEFAULT_LIMIT);
     return {
       ok: true,
@@ -245,12 +246,91 @@ function pushToken_(stored, fresh) {
 
 function loadProgressRows_(ss, idKey, programFilter) {
   var rows = readScoreIndex_(ss, idKey);
+  return filterProgressProgram_(rows, programFilter);
+}
+
+function loadProgressRowsWithFallback_(ss, idKey, programFilter) {
+  var rows = loadProgressRows_(ss, idKey, programFilter);
+  if (rows.length) return rows;
+  return readMetricsProgress_(ss, idKey, programFilter);
+}
+
+function filterProgressProgram_(rows, programFilter) {
   if (!programFilter) return rows;
   var out = [];
   for (var i = 0; i < rows.length; i++) {
     if (asString_(rows[i].program).trim() === programFilter) out.push(rows[i]);
   }
   return out;
+}
+
+function readMetricsProgress_(ss, idKey, programFilter) {
+  var sheet = ss.getSheetByName(METRICS_SHEET);
+  if (!sheet) return [];
+  var lastRow = sheet.getLastRow();
+  var lastCol = sheet.getLastColumn();
+  if (lastRow < 2 || lastCol < 1) return [];
+  var header = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  var map = {};
+  for (var c = 0; c < header.length; c++) map[String(header[c]).trim()] = c;
+  var start = Math.max(2, lastRow - (METRICS_FALLBACK_TAIL - 1));
+  var numRows = lastRow - start + 1;
+  var values = sheet.getRange(start, 1, numRows, lastCol).getValues();
+  var picked = [];
+  var seen = {};
+  for (var i = values.length - 1; i >= 0; i--) {
+    var row = values[i];
+    if (!metricsRowMatches_(row, map, idKey)) continue;
+    var kind = asString_(field_(row, map, "event_kind")).trim().toLowerCase();
+    if (kind === "effort_sample") continue;
+    var scoreValue = field_(row, map, "score_value");
+    var scorePct = field_(row, map, "score_pct");
+    var hasScore = (scoreValue !== "" && scoreValue != null) || (scorePct !== "" && scorePct != null);
+    if (kind !== "learning_result" && !hasScore) continue;
+    var prog = metricsProgress_(row, map);
+    if (programFilter && asString_(prog.program).trim() !== programFilter) continue;
+    var dedupe = prog.program + "\0" + prog.item;
+    if (seen[dedupe]) continue;
+    seen[dedupe] = 1;
+    picked.push(prog);
+  }
+  return picked;
+}
+
+function metricsRowMatches_(row, map, idKey) {
+  if (!idKey) return false;
+  if (sessionHasKey_(field_(row, map, "session_id"), idKey)) return true;
+  return emailLocalKey_(field_(row, map, "student_email")) === idKey;
+}
+
+function sessionHasKey_(sessionId, idKey) {
+  var name = nameFromSession_(sessionId);
+  if (name && idKey_(name) === idKey) return true;
+  var parts = asString_(sessionId).split("-");
+  for (var i = 0; i < parts.length; i++) {
+    if (idKey_(parts[i]) === idKey) return true;
+  }
+  return false;
+}
+
+function emailLocalKey_(email) {
+  var s = asString_(email);
+  var at = s.indexOf("@");
+  if (at < 1) return "";
+  return idKey_(s.slice(0, at));
+}
+
+function metricsProgress_(row, map) {
+  var program = asString_(field_(row, map, "curriculum_program")).trim();
+  if (!program) program = asString_(field_(row, map, "source")).trim();
+  var date = asString_(field_(row, map, "local_date")).trim();
+  if (!date) date = asString_(field_(row, map, "timestamp")).trim();
+  return {
+    program: program,
+    item: asString_(field_(row, map, "item_id")).trim(),
+    score: formatScore_(field_(row, map, "score_value"), field_(row, map, "score_max"), field_(row, map, "score_pct")),
+    date: date
+  };
 }
 
 function readScoreIndex_(ss, idKey) {
@@ -605,14 +685,8 @@ function packSheet_(ss) {
   var sheet = ss.getSheetByName(PACK_SHEET);
   if (!sheet) {
     sheet = ss.insertSheet(PACK_SHEET);
-    sheet.getRange(1, 1, 1, 5).setValues([["id_key", "program", "progress_json", "chunk_count", "updated_at"]]);
+    sheet.getRange(1, 1, 1, 4).setValues([["id_key", "program", "progress_json", "updated_at"]]);
     sheet.setFrozenRows(1);
-    return sheet;
-  }
-  var h3 = asString_(sheet.getRange(1, 4).getValue()).trim();
-  if (h3 === "updated_at") {
-    sheet.getRange(1, 4).setValue("chunk_count");
-    sheet.getRange(1, 5).setValue("updated_at");
   }
   return sheet;
 }
@@ -627,26 +701,44 @@ function packMoreSheet_(ss) {
   return sheet;
 }
 
-function readPackJson_(ss, idKey, program) {
-  var sheet = packSheet_(ss);
-  if (sheet.getLastRow() < 2) return "";
+function findPackMainRow_(sheet, idKey, program) {
+  if (sheet.getLastRow() < 2) return 0;
   var values = sheet.getDataRange().getValues();
-  var header = values[0];
-  var legacy = asString_(header[3]).trim() === "updated_at";
   for (var i = 1; i < values.length; i++) {
     if (asString_(values[i][0]) !== idKey) continue;
     if (asString_(values[i][1]) !== program) continue;
-    var chunk0 = asString_(values[i][2]);
-    if (legacy) return chunk0;
-    var count = parseInt(values[i][3], 10);
-    if (!isFinite(count) || count <= 1) return chunk0;
-    var more = readPackMoreChunks_(ss, idKey, program, count);
-    return joinProgressChunks_([chunk0].concat(more));
+    return i + 1;
   }
-  return "";
+  return 0;
 }
 
-function readPackMoreChunks_(ss, idKey, program, count) {
+function readPackChunkTotal_(ss, idKey, program) {
+  var sheet = packMoreSheet_(ss);
+  if (sheet.getLastRow() < 2) return 1;
+  var values = sheet.getDataRange().getValues();
+  for (var i = 1; i < values.length; i++) {
+    if (asString_(values[i][0]) !== idKey) continue;
+    if (asString_(values[i][1]) !== program) continue;
+    if (parseInt(values[i][2], 10) !== 0) continue;
+    var n = parseInt(values[i][3], 10);
+    if (isFinite(n) && n >= 1) return n;
+  }
+  return 1;
+}
+
+function readPackJson_(ss, idKey, program) {
+  var sheet = packSheet_(ss);
+  if (sheet.getLastRow() < 2) return "";
+  var rowNum = findPackMainRow_(sheet, idKey, program);
+  if (!rowNum) return "";
+  var chunk0 = asString_(sheet.getRange(rowNum, 3).getValue());
+  var total = readPackChunkTotal_(ss, idKey, program);
+  if (total <= 1) return chunk0;
+  var more = readPackMoreChunks_(ss, idKey, program, total);
+  return joinProgressChunks_([chunk0].concat(more));
+}
+
+function readPackMoreChunks_(ss, idKey, program, total) {
   var sheet = packMoreSheet_(ss);
   if (sheet.getLastRow() < 2) return [];
   var values = sheet.getDataRange().getValues();
@@ -659,46 +751,73 @@ function readPackMoreChunks_(ss, idKey, program, count) {
     parts[part] = asString_(values[i][3]);
   }
   var out = [];
-  for (var p = 1; p < count; p++) {
+  for (var p = 1; p < total; p++) {
     out.push(parts[p] != null ? parts[p] : "");
   }
   return out;
 }
 
-function writePackChunks_(ss, idKey, program, chunks) {
-  var sheet = packSheet_(ss);
-  var more = packMoreSheet_(ss);
-  deletePackRows_(sheet, more, idKey, program);
-  var now = new Date().toISOString();
-  var count = chunks.length;
-  var row = [textCell_(idKey), textCell_(program), textCell_(chunks[0] || ""), textCell_(count), textCell_(now)];
-  var range = sheet.getRange(Math.max(sheet.getLastRow(), 1) + 1, 1, 1, row.length);
-  range.setNumberFormat("@");
-  range.setValues([row]);
-  if (count > 1) {
-    var moreRows = [];
-    for (var p = 1; p < count; p++) {
-      moreRows.push([textCell_(idKey), textCell_(program), textCell_(p), textCell_(chunks[p])]);
-    }
-    var mStart = Math.max(more.getLastRow(), 1) + 1;
-    var mRange = more.getRange(mStart, 1, moreRows.length, 4);
-    mRange.setNumberFormat("@");
-    mRange.setValues(moreRows);
+function upsertPackMorePart_(moreSheet, idKey, program, part, chunk) {
+  var values = moreSheet.getLastRow() >= 1 ? moreSheet.getDataRange().getValues() : [];
+  var rowNum = 0;
+  for (var i = 1; i < values.length; i++) {
+    if (asString_(values[i][0]) !== idKey) continue;
+    if (asString_(values[i][1]) !== program) continue;
+    if (parseInt(values[i][2], 10) !== part) continue;
+    rowNum = i + 1;
+    break;
+  }
+  var row = [textCell_(idKey), textCell_(program), textCell_(part), textCell_(chunk)];
+  if (rowNum) {
+    moreSheet.getRange(rowNum, 1, 1, 4).setValues([row]);
+  } else {
+    moreSheet.appendRow(row);
   }
 }
 
-function deletePackRows_(sheet, moreSheet, idKey, program) {
-  var values = sheet.getLastRow() >= 2 ? sheet.getDataRange().getValues() : [];
+function deletePackMorePartsAbove_(moreSheet, idKey, program, maxPart) {
+  if (moreSheet.getLastRow() < 2) return;
+  var values = moreSheet.getDataRange().getValues();
   for (var i = values.length - 1; i >= 1; i--) {
-    if (asString_(values[i][0]) === idKey && asString_(values[i][1]) === program) {
-      sheet.deleteRow(i + 1);
-    }
+    if (asString_(values[i][0]) !== idKey) continue;
+    if (asString_(values[i][1]) !== program) continue;
+    var part = parseInt(values[i][2], 10);
+    if (!isFinite(part)) continue;
+    if (part === 0) continue;
+    if (part > maxPart) moreSheet.deleteRow(i + 1);
   }
-  var moreValues = moreSheet.getLastRow() >= 2 ? moreSheet.getDataRange().getValues() : [];
-  for (var j = moreValues.length - 1; j >= 1; j--) {
-    if (asString_(moreValues[j][0]) === idKey && asString_(moreValues[j][1]) === program) {
-      moreSheet.deleteRow(j + 1);
+}
+
+function deleteAllPackMore_(moreSheet, idKey, program) {
+  if (moreSheet.getLastRow() < 2) return;
+  var values = moreSheet.getDataRange().getValues();
+  for (var i = values.length - 1; i >= 1; i--) {
+    if (asString_(values[i][0]) !== idKey) continue;
+    if (asString_(values[i][1]) !== program) continue;
+    moreSheet.deleteRow(i + 1);
+  }
+}
+
+function writePackChunks_(ss, idKey, program, chunks) {
+  var sheet = packSheet_(ss);
+  var more = packMoreSheet_(ss);
+  var now = new Date().toISOString();
+  var count = chunks.length;
+  var mainRow = [textCell_(idKey), textCell_(program), textCell_(chunks[0] || ""), textCell_(now)];
+  var rowNum = findPackMainRow_(sheet, idKey, program);
+  if (rowNum) {
+    sheet.getRange(rowNum, 1, 1, 4).setValues([mainRow]);
+  } else {
+    sheet.appendRow(mainRow);
+  }
+  if (count > 1) {
+    upsertPackMorePart_(more, idKey, program, 0, String(count));
+    for (var p = 1; p < count; p++) {
+      upsertPackMorePart_(more, idKey, program, p, chunks[p]);
     }
+    deletePackMorePartsAbove_(more, idKey, program, count - 1);
+  } else {
+    deleteAllPackMore_(more, idKey, program);
   }
 }
 
@@ -829,10 +948,9 @@ function parseProgress_(raw) {
 function mergeProgressJson_(storedRaw, incomingRaw, program) {
   var incomingStr = String(incomingRaw == null ? "{}" : incomingRaw);
   var programKey = String(program || "").trim().toLowerCase();
+  if (programKey !== "decodable") return incomingStr;
   var incoming = parseProgress_(incomingStr);
-  var useDecodable = programKey === "decodable" || incoming != null;
-  if (!useDecodable) return incomingStr;
-  if (!incoming) return incomingStr;
+  if (!incoming) return String(storedRaw || "{}");
   var stored = parseProgress_(storedRaw);
   if (!stored) return incomingStr;
   var books = mergeBookBag_(stored.books, incoming.books);
@@ -856,15 +974,7 @@ function json_(obj) {
  * Safe to re-run; resumes via Script Properties cursor. Clears cursor when done.
  */
 function backfillStudentScoreIndex() {
-  var lock = LockService.getScriptLock();
-  if (!lock.tryLock(1000)) {
-    return { ok: false, error: "busy", message: "Backfill already running." };
-  }
-  try {
-    return backfillStudentScoreIndexChunk_();
-  } finally {
-    lock.releaseLock();
-  }
+  return backfillStudentScoreIndexChunk_();
 }
 
 function backfillStudentScoreIndexChunk_() {
@@ -884,28 +994,101 @@ function backfillStudentScoreIndexChunk_() {
 
   var cursor = parseInt(props.getProperty(BACKFILL_PROP), 10);
   if (!isFinite(cursor) || cursor < 2) cursor = 2;
-  var end = Math.min(lastRow, cursor + BACKFILL_BATCH_ROWS - 1);
   if (cursor > lastRow) {
     props.deleteProperty(BACKFILL_PROP);
     return { ok: true, done: true, message: "Backfill complete." };
   }
 
-  var numRows = end - cursor + 1;
-  var values = metrics.getRange(cursor, 1, numRows, lastCol).getValues();
-  var upserts = 0;
-  for (var i = 0; i < values.length; i++) {
-    var rec = scoreFromMetricsRow_(values[i], map);
-    if (!rec) continue;
-    upsertScore_(ss, rec);
-    upserts++;
+  var indexMap = readScoreIndexMap_(ss);
+  var started = Date.now();
+  var processed = 0;
+  var merged = 0;
+  var changed = {};
+
+  while (cursor <= lastRow) {
+    if (Date.now() - started > BACKFILL_TIME_BUDGET_MS) break;
+    var values = metrics.getRange(cursor, 1, 1, lastCol).getValues();
+    var rec = scoreFromMetricsRow_(values[0], map);
+    if (rec) {
+      var key = rec.id_key + "\0" + rec.program + "\0" + rec.item_id;
+      var existing = indexMap[key];
+      if (!existing || scoreRecIsNewer_(rec, existing)) {
+        if (existing && existing.row) rec.row = existing.row;
+        indexMap[key] = rec;
+        changed[key] = 1;
+        merged++;
+      }
+    }
+    cursor++;
+    processed++;
   }
 
-  if (end >= lastRow) {
+  flushScoreIndexMap_(ss, indexMap, changed);
+
+  if (cursor > lastRow) {
     props.deleteProperty(BACKFILL_PROP);
-    return { ok: true, done: true, processed: numRows, upserts: upserts };
+    return { ok: true, done: true, processed: processed, merged: merged };
   }
-  props.setProperty(BACKFILL_PROP, String(end + 1));
-  return { ok: true, done: false, nextRow: end + 1, processed: numRows, upserts: upserts };
+  props.setProperty(BACKFILL_PROP, String(cursor));
+  return { ok: true, done: false, nextRow: cursor, processed: processed, merged: merged };
+}
+
+function scoreRecIsNewer_(a, b) {
+  return compareUpdated_(a.updated_at, b.updated_at) > 0;
+}
+
+function compareUpdated_(a, b) {
+  var sa = asString_(a);
+  var sb = asString_(b);
+  if (sa === sb) return 0;
+  if (sa > sb) return 1;
+  if (sa < sb) return -1;
+  return 0;
+}
+
+function readScoreIndexMap_(ss) {
+  var map = {};
+  var sheet = ensureScoreSheet_(ss);
+  if (sheet.getLastRow() < 2) return map;
+  var values = sheet.getDataRange().getValues();
+  for (var i = 1; i < values.length; i++) {
+    var rec = {
+      id_key: asString_(values[i][0]),
+      program: asString_(values[i][1]),
+      item_id: asString_(values[i][2]),
+      score_value: values[i][3],
+      score_max: values[i][4],
+      score_pct: values[i][5],
+      local_date: asString_(values[i][6]),
+      updated_at: asString_(values[i][7]),
+      row: i + 1
+    };
+    var key = rec.id_key + "\0" + rec.program + "\0" + rec.item_id;
+    map[key] = rec;
+  }
+  return map;
+}
+
+function flushScoreIndexMap_(ss, map, changed) {
+  var sheet = ensureScoreSheet_(ss);
+  var keys = changed ? Object.keys(changed) : Object.keys(map);
+  for (var i = 0; i < keys.length; i++) {
+    var rec = map[keys[i]];
+    if (!rec) continue;
+    var row = [
+      textCell_(rec.id_key),
+      textCell_(rec.program),
+      textCell_(rec.item_id),
+      scoreCell_(rec.score_value),
+      scoreCell_(rec.score_max),
+      scoreCell_(rec.score_pct),
+      textCell_(rec.local_date),
+      textCell_(rec.updated_at)
+    ];
+    var rowNumber = rec.row || 0;
+    if (!rowNumber) rowNumber = Math.max(sheet.getLastRow(), 1) + 1;
+    sheet.getRange(rowNumber, 1, 1, row.length).setValues([row]);
+  }
 }
 
 function scoreFromMetricsRow_(row, map) {
@@ -917,19 +1100,19 @@ function scoreFromMetricsRow_(row, map) {
   if (kind !== "learning_result" && !hasScore) return null;
 
   var idKey = "";
-  var session = asString_(field_(row, map, "session_id"));
-  var parts = session.split("-");
-  for (var p = 0; p < parts.length; p++) {
-    var k = idKey_(parts[p]);
-    if (k && k !== "unknown" && k !== "anon" && k !== "mrj") {
-      idKey = k;
-      break;
+  var sessionName = nameFromSession_(field_(row, map, "session_id"));
+  if (sessionName) idKey = idKey_(sessionName);
+  if (!idKey) {
+    var email = asString_(field_(row, map, "student_email")).trim();
+    if (email && email.toLowerCase() !== "unknown") {
+      var at = email.indexOf("@");
+      if (at > 0) idKey = idKey_(email.slice(0, at));
+      else idKey = idKey_(email);
     }
   }
   if (!idKey) {
-    var email = asString_(field_(row, map, "student_email"));
-    var at = email.indexOf("@");
-    if (at > 0) idKey = idKey_(email.slice(0, at));
+    var sid = asString_(field_(row, map, "student_id")).trim();
+    if (sid) idKey = idKey_(sid);
   }
   if (!idKey) return null;
 

@@ -118,6 +118,7 @@
   var state = { id: "", token: "", progress: [], progressError: "" };
   var packState = {};
   var PROGRESS_PAGE_SIZE = 500;
+  var PROGRESS_MAX_PAGES = 40;
   var viewGen = 0;
   var busy = false;
   var loginFlightSeq = 0;
@@ -285,10 +286,6 @@
         renderDoors_();
         return;
       }
-      if (result && result.error === "progress_load_failed") {
-        renderStatus_("Could not load your saved scores. Try again.", { resume: true });
-        return;
-      }
       optimisticResume_(saved, gen);
     }).catch(function () {
       if (gen !== viewGen) return;
@@ -297,7 +294,7 @@
   }
 
   function optimisticResume_(saved, gen) {
-    finish_(saved.id, saved.token, []);
+    finish_(saved.id, saved.token, [], "resume_pending");
     if (rootEl) {
       var note = el_("p", "mrj-auth-status");
       note.textContent = MESSAGES.resume_busy;
@@ -316,13 +313,7 @@
       saveSession_();
       if (gen !== viewGen) return;
       renderSignedIn_();
-      if (typeof options.onReady === "function") {
-        options.onReady({
-          id: state.id,
-          token: state.token,
-          progress: state.progress
-        });
-      }
+      dispatchReady_();
     }).catch(function () {});
   }
 
@@ -587,7 +578,9 @@
     var offset = 0;
     var nextId = id;
     var nextToken = tokenValue;
+    var pages = 0;
     function pullPage() {
+      pages += 1;
       return post_(progressBody_(id, tokenValue, program, offset), hook).then(function (data) {
         if (!data || !data.ok) {
           return {
@@ -606,6 +599,8 @@
         if (!hasMore && data.hasMore !== false && chunk.length >= PROGRESS_PAGE_SIZE) {
           hasMore = true;
         }
+        if (typeof data.total === "number" && all.length >= data.total) hasMore = false;
+        if (pages >= PROGRESS_MAX_PAGES) hasMore = false;
         if (hasMore && chunk.length > 0) {
           offset += chunk.length;
           return pullPage();
@@ -621,6 +616,19 @@
     return pullPage();
   }
 
+  function retryProgressInBackground_(id, tokenValue) {
+    fetchAllProgress_(id, tokenValue, appProgram_()).then(function (result) {
+      if (!result || !result.ok) return;
+      state.id = result.id || id;
+      state.token = result.token || tokenValue;
+      state.progress = result.progress;
+      state.progressError = "";
+      saveSession_();
+      renderSignedIn_();
+      dispatchReady_();
+    }).catch(function () {});
+  }
+
   function loadPlace_(id, tokenValue) {
     renderStatus_(MESSAGES.loading_place);
     fetchAllProgress_(id, tokenValue, appProgram_()).then(function (result) {
@@ -632,19 +640,16 @@
         renderLogin_("Sign in again.", [id, ""]);
         return;
       }
-      renderStatus_(result && result.message ? result.message : "Could not load your saved scores. Try again.");
+      var err = (result && result.error) ? result.error : "progress_load_failed";
+      finish_((result && result.id) || id, (result && result.token) || tokenValue, [], err);
+      retryProgressInBackground_(state.id, state.token);
     }).catch(function () {
-      renderStatus_("Could not load your saved scores. Try again.");
+      finish_(id, tokenValue, [], "network");
+      retryProgressInBackground_(state.id, state.token);
     });
   }
 
-  function finish_(id, tokenValue, progress) {
-    state.id = id == null ? "" : String(id);
-    state.token = tokenValue == null ? "" : String(tokenValue);
-    state.progress = Array.isArray(progress) ? progress : [];
-    state.progressError = "";
-    saveSession_();
-    renderSignedIn_();
+  function dispatchReady_() {
     if (typeof options.onReady === "function") {
       options.onReady({
         id: state.id,
@@ -653,6 +658,20 @@
         progressError: state.progressError
       });
     }
+  }
+
+  function finish_(id, tokenValue, progress, progressError) {
+    state.id = id == null ? "" : String(id);
+    state.token = tokenValue == null ? "" : String(tokenValue);
+    state.progress = Array.isArray(progress) ? progress : [];
+    state.progressError = progressError ? String(progressError) : "";
+    saveSession_();
+    renderSignedIn_();
+    dispatchReady_();
+  }
+
+  function progressError() {
+    return state.progressError || "";
   }
 
   function packKey_(program) {
@@ -849,7 +868,8 @@
     loadProgressForApp: loadProgressForApp,
     loadPack: loadPack,
     savePack: savePack,
-    packReady: packReady
+    packReady: packReady,
+    progressError: progressError
   };
 
   if (global.MRJ_AUTH_TEST_MODE) {
