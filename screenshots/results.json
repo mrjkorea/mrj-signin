@@ -1,0 +1,141 @@
+[
+  {
+    "slug": "word-master",
+    "url": "https://mrjkorea.github.io/word-master/",
+    "programs": [
+      "word-master"
+    ],
+    "overlapNote": "overlap at chip center: mrj-auth-panel-backdrop"
+  },
+  {
+    "slug": "day2-words",
+    "url": "https://mrjkorea.github.io/day2-words/",
+    "programs": [
+      "day2-words",
+      "word-master"
+    ],
+    "overlapNote": "overlap at chip center: mrj-auth-panel-backdrop"
+  },
+  {
+    "slug": "day3-workbook",
+    "url": "https://mrjkorea.github.io/day3-workbook/",
+    "programs": [
+      "day3-workbook",
+      "conversation"
+    ],
+    "overlapNote": "overlap at chip center: mrj-auth-panel-backdrop"
+  },
+  {
+    "slug": "day4-speak",
+    "url": "https://mrjkorea.github.io/day4-speak/",
+    "programs": [
+      "day4-speak"
+    ],
+    "overlapNote": "overlap at chip center: mrj-auth-panel-backdrop"
+  },
+  {
+    "slug": "day5-practice",
+    "url": "https://mrjkorea.github.io/day5-practice/",
+    "programs": [
+      "day5-practice"
+    ],
+    "overlapNote": "overlap at chip center: mrj-auth-panel-backdrop"
+  },
+  {
+    "slug": "day6-talk",
+    "url": "https://mrjkorea.github.io/day6-talk/",
+    "programs": [
+      "day6-talk"
+    ],
+    "overlapNote": "overlap at chip center: mrj-auth-panel-backdrop"
+  },
+  {
+    "slug": "leap-frog",
+    "url": "https://mrjkorea.github.io/leap-frog/",
+    "programs": [
+      "leap-frog"
+    ],
+    "overlapNote": "overlap at chip center: mrj-auth-panel-backdrop"
+  },
+  {
+    "slug": "ski-jump",
+    "url": "https://mrjkorea.github.io/ski-jump/",
+    "programs": [
+      "ski-jump"
+    ],
+    "overlapNote": "overlap at chip center: mrj-auth-panel-backdrop"
+  },
+  {
+    "slug": "firefighter-spelling",
+    "url": "https://mrjkorea.github.io/firefighter-spelling/",
+    "programs": [
+      "firefighter-spelling"
+    ],
+    "overlapNote": "overlap at chip center: mrj-auth-panel-backdrop"
+  },
+  {
+    "slug": "typing-kids",
+    "url": "https://mrjkorea.github.io/typing-kids/",
+    "programs": [
+      "typing-kids"
+    ],
+    "overlapNote": "overlap at chip center: mrj-auth-panel-backdrop"
+  },
+  {
+    "slug": "skill-builder-g1",
+    "url": "https://mrjkorea.github.io/skill-builder-g1/",
+    "programs": [
+      "skill-builder-g1"
+    ],
+    "overlapNote": "overlap at chip center: mrj-auth-panel-backdrop"
+  },
+  {
+    "slug": "MRJ-Zap-Grammar-Books",
+    "url": "https://mrjkorea.github.io/MRJ-Zap-Grammar-Books/",
+    "programs": [
+      "greenzap"
+    ],
+    "chipOff": true,
+    "overlapNote": "overlap at chip center: mrj-auth-panel-backdrop"
+  },
+  {
+    "slug": "pronounce",
+    "url": "https://mrjkorea.github.io/pronounce/",
+    "programs": [
+      "pronounce"
+    ],
+    "overlapNote": "overlap at chip center: mrj-auth-panel-backdrop"
+  },
+  {
+    "slug": "pronounce-whistle",
+    "url": "https://mrjkorea.github.io/pronounce-whistle/",
+    "programs": [
+      "pronounce"
+    ],
+    "overlapNote": "overlap at chip center: mrj-auth-panel-backdrop"
+  },
+  {
+    "slug": "mrj-decodable-try-41",
+    "url": "https://mrjkorea.github.io/mrj-decodable-try-41/",
+    "programs": [
+      "decodable"
+    ],
+    "overlapNote": "overlap at chip center: mrj-auth-panel-backdrop"
+  },
+  {
+    "slug": "mrj-decodable-try-71",
+    "url": "https://mrjkorea.github.io/mrj-decodable-try-71/",
+    "programs": [
+      "decodable"
+    ],
+    "overlapNote": "overlap at chip center: mrj-auth-panel-backdrop"
+  },
+  {
+    "slug": "news-words",
+    "url": "https://mrjkorea.github.io/news-words/",
+    "programs": [
+      "news-words"
+    ],
+    "overlapNote": "overlap at chip center: mrj-auth-panel-backdrop"
+  }
+]

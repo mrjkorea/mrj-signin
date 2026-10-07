@@ -7,7 +7,7 @@
 (function (global) {
   "use strict";
 
-  var AUTH_VERSION = "20261007-progress-1.4.1";
+  var AUTH_VERSION = "20261007-progress-1.4.2";
   var ENDPOINT = "https://script.google.com/macros/s/AKfycbwtJTUO3gbcMrlAwsn1feWxyp7Rw2cxpfe1bOT9v2rxmQHa2Tlc6pFNWAjU6ZAdlD6kFQ/exec";
   var SESSION_KEY = "mrj.auth.session";
   var REQUEST_TIMEOUT_MS = 30000;
@@ -119,8 +119,33 @@
   var packState = {};
   var PROGRESS_PAGE_SIZE = 500;
   var PROGRESS_MAX_PAGES = 40;
+  var PROGRESS_PANEL_MAX_PAGES = 500;
+  var APP_SCORE_PROGRAM_MAP = {
+    "word-master": ["word-master"],
+    "day2-words": ["day2-words", "word-master"],
+    "day3-workbook": ["day3-workbook", "conversation"],
+    "day4-speak": ["day4-speak"],
+    "day5-practice": ["day5-practice"],
+    "day6-talk": ["day6-talk"],
+    "leap-frog": ["leap-frog"],
+    "ski-jump": ["ski-jump"],
+    "firefighter-spelling": ["firefighter-spelling"],
+    "typing-kids": ["typing-kids"],
+    "skill-builder-g1": ["skill-builder-g1"],
+    "mrj-zap-grammar-books": ["greenzap"],
+    "pronounce": ["pronounce"],
+    "mrj-decodable-try-41": ["decodable"],
+    "mrj-decodable-try-71": ["decodable"],
+    "news-words": ["news-words"]
+  };
   var viewGen = 0;
   var sessionGen = 0;
+  var chipEl = null;
+  var panelRootEl = null;
+  var panelBodyEl = null;
+  var panelFetchGen = 0;
+  var panelOpen = false;
+  var panelKeyHandler = null;
   var busy = false;
   var loginFlightSeq = 0;
   var activeLoginFlight = null;
@@ -248,6 +273,161 @@
     return "";
   }
 
+  function appKey_() {
+    return String(appProgram_() || "").trim().toLowerCase();
+  }
+
+  function chipDisabled_() {
+    try {
+      if (options && options.chipOff === true) return true;
+      var doc = global.document;
+      if (!doc || !doc.documentElement) return false;
+      var script = doc.currentScript;
+      if (script && script.getAttribute && String(script.getAttribute("data-mrj-chip") || "").trim().toLowerCase() === "off") {
+        return true;
+      }
+      var boot = doc.querySelector && doc.querySelector("script[data-mrj-app][src*='mrj-auth-boot']");
+      if (boot && String(boot.getAttribute("data-mrj-chip") || "").trim().toLowerCase() === "off") {
+        return true;
+      }
+      if (String(doc.documentElement.getAttribute("data-mrj-chip") || "").trim().toLowerCase() === "off") {
+        return true;
+      }
+      if (doc.body && String(doc.body.getAttribute("data-mrj-chip") || "").trim().toLowerCase() === "off") {
+        return true;
+      }
+    } catch (ignore) {}
+    return false;
+  }
+
+  function scoreProgramsForApp_() {
+    var override = options && options.scorePrograms;
+    if (override != null && String(override).trim()) {
+      return String(override)
+        .split(",")
+        .map(function (s) { return String(s).trim(); })
+        .filter(Boolean);
+    }
+    var key = appKey_();
+    if (key && APP_SCORE_PROGRAM_MAP[key]) {
+      return APP_SCORE_PROGRAM_MAP[key].slice();
+    }
+    if (key) return [key];
+    return [];
+  }
+
+  function programNameSet_() {
+    var set = {};
+    scoreProgramsForApp_().forEach(function (name) {
+      set[String(name).trim().toLowerCase()] = true;
+    });
+    return set;
+  }
+
+  function rowProgramName_(row) {
+    if (!row || typeof row !== "object") return "";
+    return String(row.program || row.curriculum_program || "").trim();
+  }
+
+  function rowItemId_(row) {
+    if (!row || typeof row !== "object") return "";
+    return String(row.item_id || row.itemId || row.item || "").trim();
+  }
+
+  function normalizeProgressRow_(row) {
+    row = row || {};
+    var scoreVal = row.score_value != null ? row.score_value : row.scoreValue;
+    var scoreMax = row.score_max != null ? row.score_max : row.scoreMax;
+    var scorePct = row.score_pct != null ? row.score_pct : row.scorePct;
+    if (scorePct == null && scoreVal != null && scoreMax != null && Number(scoreMax) > 0) {
+      scorePct = Math.round((Number(scoreVal) / Number(scoreMax)) * 100);
+    }
+    var scoreText = "";
+    if (scoreVal != null && scoreMax != null) {
+      scoreText = String(scoreVal) + "/" + String(scoreMax);
+      if (scorePct != null) scoreText += " (" + String(scorePct) + "%)";
+    } else if (scorePct != null) {
+      scoreText = String(scorePct) + "%";
+    } else if (row.score != null) {
+      scoreText = String(row.score);
+    }
+    return {
+      program: rowProgramName_(row),
+      item_id: rowItemId_(row),
+      score_value: scoreVal,
+      score_max: scoreMax,
+      score_pct: scorePct,
+      local_date: row.local_date || row.localDate || row.date || "",
+      updated_at: row.updated_at || row.updatedAt || "",
+      scoreText: scoreText
+    };
+  }
+
+  function rowMatchesAppPrograms_(row, programSet) {
+    var p = rowProgramName_(row).toLowerCase();
+    return !!(p && programSet[p]);
+  }
+
+  function itemIdSortKey_(itemId) {
+    var id = String(itemId || "");
+    var m = id.match(/^(g(\d+):)?(u(\d+)|unit(\d+))?(.*)$/i);
+    if (!m) return { book: 0, unit: 0, rest: id.toLowerCase() };
+    var book = m[2] ? parseInt(m[2], 10) : 1;
+    var unit = 0;
+    if (m[4]) unit = parseInt(m[4], 10);
+    else if (m[5]) unit = parseInt(m[5], 10);
+    return { book: book, unit: unit, rest: (m[6] || id).toLowerCase() };
+  }
+
+  function compareItemIds_(a, b) {
+    var ka = itemIdSortKey_(a);
+    var kb = itemIdSortKey_(b);
+    if (ka.book !== kb.book) return ka.book - kb.book;
+    if (ka.unit !== kb.unit) return ka.unit - kb.unit;
+    if (ka.rest < kb.rest) return -1;
+    if (ka.rest > kb.rest) return 1;
+    return 0;
+  }
+
+  function sortPanelRows_(rows) {
+    rows = rows.slice();
+    rows.sort(function (a, b) {
+      var cmp = compareItemIds_(a.item_id, b.item_id);
+      if (cmp !== 0) return cmp;
+      var da = String(a.local_date || a.updated_at || "");
+      var db = String(b.local_date || b.updated_at || "");
+      if (da < db) return -1;
+      if (da > db) return 1;
+      return 0;
+    });
+    return rows;
+  }
+
+  function averagePct_(rows) {
+    var sum = 0;
+    var n = 0;
+    rows.forEach(function (row) {
+      if (row.score_pct == null || row.score_pct === "") return;
+      var v = Number(row.score_pct);
+      if (!isNaN(v)) {
+        sum += v;
+        n += 1;
+      }
+    });
+    if (!n) return null;
+    return Math.round(sum / n);
+  }
+
+  function itemLabel_(itemId) {
+    try {
+      var labels = global.MRJ_ITEM_LABELS;
+      if (labels && typeof labels === "object" && labels[itemId] != null) {
+        return String(labels[itemId]);
+      }
+    } catch (ignore) {}
+    return "";
+  }
+
   function mount(el, opts) {
     installStorageListener_();
     var node = resolveEl_(el);
@@ -315,6 +495,7 @@
       state.progressError = "";
       saveSession_();
       renderSignedIn_();
+      updateStudentChip_();
       dispatchReady_();
     }).catch(function () {});
   }
@@ -335,6 +516,8 @@
     state = { id: "", token: "", progress: [], progressError: "" };
     packState = {};
     clearSession_();
+    closeProgressPanel();
+    updateStudentChip_();
     if (rootEl) renderDoors_();
   }
 
@@ -576,7 +759,9 @@
     return body;
   }
 
-  function fetchAllProgress_(id, tokenValue, program, hook) {
+  function fetchAllProgress_(id, tokenValue, program, hook, fetchOpts) {
+    fetchOpts = fetchOpts || {};
+    var maxPages = fetchOpts.unlimited ? PROGRESS_PANEL_MAX_PAGES : PROGRESS_MAX_PAGES;
     var all = [];
     var offset = 0;
     var nextId = id;
@@ -603,7 +788,7 @@
           hasMore = true;
         }
         if (typeof data.total === "number" && all.length >= data.total) hasMore = false;
-        if (pages >= PROGRESS_MAX_PAGES) hasMore = false;
+        if (pages >= maxPages) hasMore = false;
         if (hasMore && chunk.length > 0) {
           offset += chunk.length;
           return pullPage();
@@ -617,6 +802,27 @@
       });
     }
     return pullPage();
+  }
+
+  function filterProgressForApp_(rows) {
+    var programSet = programNameSet_();
+    var out = [];
+    (rows || []).forEach(function (row) {
+      if (rowMatchesAppPrograms_(row, programSet)) out.push(row);
+    });
+    return out;
+  }
+
+  function fetchPanelProgress_(snap) {
+    return fetchAllProgress_(snap.id, snap.token, "", null, { unlimited: true }).then(function (result) {
+      if (!result || !result.ok) return result;
+      return {
+        ok: true,
+        id: result.id,
+        token: result.token,
+        progress: filterProgressForApp_(result.progress)
+      };
+    });
   }
 
   function retryProgressInBackground_(id, tokenValue) {
@@ -690,6 +896,7 @@
     state.progressError = progressError ? String(progressError) : "";
     saveSession_();
     renderSignedIn_();
+    updateStudentChip_();
     dispatchReady_();
   }
 
@@ -879,6 +1086,254 @@
     return { label: label, type: type, autocomplete: autocomplete };
   }
 
+  function ensureChipDom_() {
+    if (!global.document || !global.document.body) return;
+    if (!chipEl) {
+      chipEl = el_("button", "mrj-auth-chip");
+      chipEl.type = "button";
+      chipEl.id = "mrj-auth-student-chip";
+      chipEl.setAttribute("aria-haspopup", "dialog");
+      chipEl.addEventListener("click", function () {
+        try {
+          openProgressPanel();
+        } catch (ignore) {}
+      });
+      global.document.body.appendChild(chipEl);
+      if (global.addEventListener) {
+        global.addEventListener("resize", function () {
+          try {
+            adjustChipInset_();
+          } catch (ignore) {}
+        });
+      }
+    }
+    if (!panelRootEl) {
+      panelRootEl = el_("div", "mrj-auth-panel-root");
+      panelRootEl.id = "mrj-auth-progress-panel-root";
+      panelRootEl.hidden = true;
+      panelRootEl.setAttribute("aria-hidden", "true");
+      global.document.body.appendChild(panelRootEl);
+    }
+  }
+
+  function updateStudentChip_() {
+    try {
+      if (!global.document || !global.document.body) return;
+      ensureChipDom_();
+      if (chipDisabled_() || !state.id) {
+        if (chipEl) chipEl.hidden = true;
+        return;
+      }
+      chipEl.hidden = false;
+      chipEl.textContent = state.id;
+      chipEl.setAttribute("aria-label", "My scores for " + state.id);
+      adjustChipInset_();
+    } catch (ignore) {}
+  }
+
+  function adjustChipInset_() {
+    if (!chipEl || chipEl.hidden || !global.document) return;
+    try {
+      chipEl.style.marginRight = "";
+      chipEl.style.top = "calc(0.55rem + env(safe-area-inset-top, 0px))";
+      var chipRect = chipEl.getBoundingClientRect && chipEl.getBoundingClientRect();
+      if (!chipRect || !chipRect.width) return;
+      var viewportW = global.innerWidth || 800;
+      var selectors = [".topbar .pill:last-child", ".student-pill", ".hud .topbar > *:last-child"];
+      var maxRight = 0;
+      for (var s = 0; s < selectors.length; s++) {
+        var nodes = global.document.querySelectorAll(selectors[s]);
+        for (var i = 0; i < nodes.length; i++) {
+          var node = nodes[i];
+          if (!node || node === chipEl) continue;
+          if (node.closest && node.closest("#mrj-auth-student-chip, .mrj-auth-panel-root, #mrj-auth-gate")) continue;
+          var r = node.getBoundingClientRect();
+          if (!r || !r.width || !r.height) continue;
+          if (r.top > 120 || r.right < viewportW * 0.45) continue;
+          var overlap = r.right - (viewportW - chipRect.width - 16);
+          if (overlap > maxRight) maxRight = overlap;
+        }
+      }
+      if (maxRight > 8) chipEl.style.marginRight = Math.ceil(maxRight + 12) + "px";
+    } catch (ignore) {}
+  }
+
+  function panelShell_(titleText) {
+    clear_(panelRootEl);
+    var backdrop = el_("button", "mrj-auth-panel-backdrop");
+    backdrop.type = "button";
+    backdrop.setAttribute("aria-label", "Close scores");
+    backdrop.addEventListener("click", function () {
+      closeProgressPanel();
+    });
+    var dialog = el_("div", "mrj-auth-panel");
+    dialog.setAttribute("role", "dialog");
+    dialog.setAttribute("aria-modal", "true");
+    dialog.setAttribute("aria-label", titleText || "My scores");
+    var header = el_("div", "mrj-auth-panel-header");
+    var title = el_("h2", "mrj-auth-panel-title");
+    title.textContent = titleText || "My scores";
+    var closeBtn = button_("×", "mrj-auth-panel-close");
+    closeBtn.setAttribute("aria-label", "Close");
+    closeBtn.addEventListener("click", function () {
+      closeProgressPanel();
+    });
+    header.appendChild(title);
+    header.appendChild(closeBtn);
+    var body = el_("div", "mrj-auth-panel-body");
+    dialog.appendChild(header);
+    dialog.appendChild(body);
+    panelRootEl.appendChild(backdrop);
+    panelRootEl.appendChild(dialog);
+    return { body: body, dialog: dialog };
+  }
+
+  function renderPanelLoading_(body) {
+    clear_(body);
+    var wait = el_("div", "mrj-auth-wait");
+    wait.setAttribute("aria-busy", "true");
+    var status = el_("p", "mrj-auth-status");
+    status.textContent = "Loading your scores…";
+    wait.appendChild(status);
+    wait.appendChild(waitBar_());
+    body.appendChild(wait);
+  }
+
+  function renderPanelError_(body, message, onRetry) {
+    clear_(body);
+    var err = el_("p", "mrj-auth-error");
+    err.textContent = message || "Could not load scores.";
+    body.appendChild(err);
+    var retry = button_("Retry", "mrj-auth-submit");
+    retry.addEventListener("click", function () {
+      if (typeof onRetry === "function") onRetry();
+    });
+    body.appendChild(retry);
+  }
+
+  function renderPanelRows_(body, rows) {
+    clear_(body);
+    var normalized = sortPanelRows_(rows.map(normalizeProgressRow_));
+    var avg = averagePct_(normalized);
+    var summary = el_("p", "mrj-auth-panel-summary");
+    summary.textContent =
+      normalized.length +
+      " score" +
+      (normalized.length === 1 ? "" : "s") +
+      (avg != null ? " · average " + avg + "%" : "");
+    body.appendChild(summary);
+    if (!normalized.length) {
+      var empty = el_("p", "mrj-auth-empty");
+      empty.textContent = "No scores in this app yet.";
+      body.appendChild(empty);
+      return;
+    }
+    var list = el_("ul", "mrj-auth-panel-list");
+    normalized.forEach(function (row) {
+      var item = el_("li", "mrj-auth-panel-row");
+      var label = itemLabel_(row.item_id);
+      if (label) {
+        var main = el_("span", "mrj-auth-prog-main");
+        main.textContent = label;
+        var sub = el_("span", "mrj-auth-panel-item-id");
+        sub.textContent = row.item_id;
+        item.appendChild(main);
+        item.appendChild(sub);
+      } else {
+        var mainOnly = el_("span", "mrj-auth-prog-main");
+        mainOnly.textContent = row.item_id || "—";
+        item.appendChild(mainOnly);
+      }
+      var scoreLine = el_("span", "mrj-auth-panel-score");
+      scoreLine.textContent = [row.scoreText, row.local_date].filter(Boolean).join(" · ");
+      item.appendChild(scoreLine);
+      list.appendChild(item);
+    });
+    body.appendChild(list);
+    var foot = el_("div", "mrj-auth-panel-foot");
+    var signOutBtn = button_("Sign out", "mrj-auth-signout");
+    signOutBtn.addEventListener("click", function () {
+      closeProgressPanel();
+      signOut();
+    });
+    foot.appendChild(signOutBtn);
+    body.appendChild(foot);
+  }
+
+  function loadPanelProgress_(fetchGen, snap) {
+    if (!panelRootEl || panelRootEl.hidden) return;
+    var body = panelBodyEl;
+    if (!body && panelRootEl.querySelector) {
+      body = panelRootEl.querySelector(".mrj-auth-panel-body");
+    }
+    if (!body) return;
+    renderPanelLoading_(body);
+    fetchPanelProgress_(snap).then(function (result) {
+      if (!panelOpen || fetchGen !== panelFetchGen) return;
+      if (!sessionMatches_(snap)) return;
+      if (!result || !result.ok) {
+        renderPanelError_(body, (result && result.message) || "Could not load scores.", function () {
+          if (!state.id || !state.token) return;
+          loadPanelProgress_(fetchGen, captureSession_());
+        });
+        return;
+      }
+      if (result.token) state.token = String(result.token);
+      if (result.id) state.id = String(result.id);
+      renderPanelRows_(body, result.progress || []);
+    }).catch(function () {
+      if (!panelOpen || fetchGen !== panelFetchGen) return;
+      if (!sessionMatches_(snap)) return;
+      renderPanelError_(body, "Could not load scores.", function () {
+        if (!state.id || !state.token) return;
+        loadPanelProgress_(fetchGen, captureSession_());
+      });
+    });
+  }
+
+  function openProgressPanel() {
+    try {
+      if (!state.id || !state.token) return;
+      ensureChipDom_();
+      panelOpen = true;
+      panelFetchGen += 1;
+      var fetchGen = panelFetchGen;
+      var snap = captureSession_();
+      panelRootEl.hidden = false;
+      panelRootEl.setAttribute("aria-hidden", "false");
+      var shell = panelShell_("My scores");
+      panelBodyEl = shell.body;
+      renderPanelLoading_(shell.body);
+      if (panelKeyHandler && global.removeEventListener) {
+        global.removeEventListener("keydown", panelKeyHandler);
+      }
+      panelKeyHandler = function (ev) {
+        if (!panelOpen) return;
+        if (ev && (ev.key === "Escape" || ev.key === "Esc")) closeProgressPanel();
+      };
+      if (global.addEventListener) global.addEventListener("keydown", panelKeyHandler);
+      loadPanelProgress_(fetchGen, snap);
+      if (shell.dialog && shell.dialog.focus) shell.dialog.focus();
+    } catch (ignore) {}
+  }
+
+  function closeProgressPanel() {
+    try {
+      panelOpen = false;
+      panelFetchGen += 1;
+      if (panelKeyHandler && global.removeEventListener) {
+        global.removeEventListener("keydown", panelKeyHandler);
+        panelKeyHandler = null;
+      }
+      if (panelRootEl) {
+        panelRootEl.hidden = true;
+        panelRootEl.setAttribute("aria-hidden", "true");
+        clear_(panelRootEl);
+      }
+      panelBodyEl = null;
+    } catch (ignore) {}
+  }
+
   function setBusy_(on) {
     if (!rootEl) return;
     var buttons = rootEl.querySelectorAll("button");
@@ -917,7 +1372,9 @@
     savePack: savePack,
     packReady: packReady,
     progressError: progressError,
-    idKey: idKey
+    idKey: idKey,
+    openProgressPanel: openProgressPanel,
+    closeProgressPanel: closeProgressPanel
   };
 
   if (global.MRJ_AUTH_TEST_MODE) {
@@ -927,10 +1384,16 @@
       send: send_,
       sessionRejected: sessionRejected_,
       fetchAllProgress: fetchAllProgress_,
+      fetchPanelProgress: fetchPanelProgress_,
       retryProgressInBackground: retryProgressInBackground_,
       progressBody: progressBody_,
+      scoreProgramsForApp: scoreProgramsForApp_,
+      filterProgressForApp: filterProgressForApp_,
+      chipDisabled: chipDisabled_,
+      updateStudentChip: updateStudentChip_,
       REQUEST_TIMEOUT_MS: REQUEST_TIMEOUT_MS,
-      AUTH_VERSION: AUTH_VERSION
+      AUTH_VERSION: AUTH_VERSION,
+      APP_SCORE_PROGRAM_MAP: APP_SCORE_PROGRAM_MAP
     };
   }
 
