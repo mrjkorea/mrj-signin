@@ -301,6 +301,8 @@
       rootEl.insertBefore(note, rootEl.firstChild);
     }
     fetchAllProgress_(saved.id, saved.token, appProgram_()).then(function (result) {
+      if (gen !== viewGen) return;
+      if (!state.id || rules.idKey(state.id) !== rules.idKey(saved.id)) return;
       if (sessionRejected_(result)) {
         signOut();
         return;
@@ -311,7 +313,6 @@
       state.progress = result.progress;
       state.progressError = "";
       saveSession_();
-      if (gen !== viewGen) return;
       renderSignedIn_();
       dispatchReady_();
     }).catch(function () {});
@@ -617,7 +618,10 @@
   }
 
   function retryProgressInBackground_(id, tokenValue) {
+    var gen = viewGen;
     fetchAllProgress_(id, tokenValue, appProgram_()).then(function (result) {
+      if (gen !== viewGen) return;
+      if (!state.id || rules.idKey(state.id) !== rules.idKey(id)) return;
       if (!result || !result.ok) return;
       state.id = result.id || id;
       state.token = result.token || tokenValue;
@@ -879,6 +883,7 @@
       send: send_,
       sessionRejected: sessionRejected_,
       fetchAllProgress: fetchAllProgress_,
+      retryProgressInBackground: retryProgressInBackground_,
       progressBody: progressBody_,
       REQUEST_TIMEOUT_MS: REQUEST_TIMEOUT_MS,
       AUTH_VERSION: AUTH_VERSION

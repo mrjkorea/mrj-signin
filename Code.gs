@@ -21,6 +21,8 @@ var MAX_PROGRESS_CHUNKS = 12;
 var METRICS_FALLBACK_TAIL = 12000;
 var BACKFILL_PROP = "backfill_score_index_cursor";
 var BACKFILL_TIME_BUDGET_MS = 270000;
+var METRICS_READ_BATCH = 2000;
+var FLUSH_LOCK_MS = 5000;
 
 var ACCOUNT_HEADERS = ["id_display", "id_key", "password", "created_at", "last_login", "token"];
 var SCORE_HEADERS = ["id_key", "program", "item_id", "score_value", "score_max", "score_pct", "local_date", "updated_at"];
@@ -691,14 +693,23 @@ function packSheet_(ss) {
   return sheet;
 }
 
-function packMoreSheet_(ss) {
+function packMoreSheet_(ss, createIfMissing) {
   var sheet = ss.getSheetByName(PACK_MORE_SHEET);
-  if (!sheet) {
-    sheet = ss.insertSheet(PACK_MORE_SHEET);
-    sheet.getRange(1, 1, 1, 4).setValues([["id_key", "program", "part", "chunk"]]);
-    sheet.setFrozenRows(1);
+  if (sheet) return sheet;
+  if (!createIfMissing) return null;
+  var lock = LockService.getScriptLock();
+  lock.waitLock(FLUSH_LOCK_MS);
+  try {
+    sheet = ss.getSheetByName(PACK_MORE_SHEET);
+    if (!sheet) {
+      sheet = ss.insertSheet(PACK_MORE_SHEET);
+      sheet.getRange(1, 1, 1, 4).setValues([["id_key", "program", "part", "chunk"]]);
+      sheet.setFrozenRows(1);
+    }
+    return sheet;
+  } finally {
+    lock.releaseLock();
   }
-  return sheet;
 }
 
 function findPackMainRow_(sheet, idKey, program) {
@@ -713,8 +724,8 @@ function findPackMainRow_(sheet, idKey, program) {
 }
 
 function readPackChunkTotal_(ss, idKey, program) {
-  var sheet = packMoreSheet_(ss);
-  if (sheet.getLastRow() < 2) return 1;
+  var sheet = ss.getSheetByName(PACK_MORE_SHEET);
+  if (!sheet || sheet.getLastRow() < 2) return 1;
   var values = sheet.getDataRange().getValues();
   for (var i = 1; i < values.length; i++) {
     if (asString_(values[i][0]) !== idKey) continue;
@@ -739,8 +750,8 @@ function readPackJson_(ss, idKey, program) {
 }
 
 function readPackMoreChunks_(ss, idKey, program, total) {
-  var sheet = packMoreSheet_(ss);
-  if (sheet.getLastRow() < 2) return [];
+  var sheet = ss.getSheetByName(PACK_MORE_SHEET);
+  if (!sheet || sheet.getLastRow() < 2) return [];
   var values = sheet.getDataRange().getValues();
   var parts = {};
   for (var i = 1; i < values.length; i++) {
@@ -800,24 +811,25 @@ function deleteAllPackMore_(moreSheet, idKey, program) {
 
 function writePackChunks_(ss, idKey, program, chunks) {
   var sheet = packSheet_(ss);
-  var more = packMoreSheet_(ss);
   var now = new Date().toISOString();
   var count = chunks.length;
-  var mainRow = [textCell_(idKey), textCell_(program), textCell_(chunks[0] || ""), textCell_(now)];
   var rowNum = findPackMainRow_(sheet, idKey, program);
+  if (count > 1) {
+    var more = packMoreSheet_(ss, true);
+    for (var p = 1; p < count; p++) {
+      upsertPackMorePart_(more, idKey, program, p, chunks[p]);
+    }
+    upsertPackMorePart_(more, idKey, program, 0, String(count));
+    deletePackMorePartsAbove_(more, idKey, program, count - 1);
+  } else {
+    var moreSheet = ss.getSheetByName(PACK_MORE_SHEET);
+    if (moreSheet) deleteAllPackMore_(moreSheet, idKey, program);
+  }
+  var mainRow = [textCell_(idKey), textCell_(program), textCell_(chunks[0] || ""), textCell_(now)];
   if (rowNum) {
     sheet.getRange(rowNum, 1, 1, 4).setValues([mainRow]);
   } else {
     sheet.appendRow(mainRow);
-  }
-  if (count > 1) {
-    upsertPackMorePart_(more, idKey, program, 0, String(count));
-    for (var p = 1; p < count; p++) {
-      upsertPackMorePart_(more, idKey, program, p, chunks[p]);
-    }
-    deletePackMorePartsAbove_(more, idKey, program, count - 1);
-  } else {
-    deleteAllPackMore_(more, idKey, program);
   }
 }
 
@@ -1004,26 +1016,42 @@ function backfillStudentScoreIndexChunk_() {
   var processed = 0;
   var merged = 0;
   var changed = {};
+  var runStartCursor = cursor;
 
   while (cursor <= lastRow) {
     if (Date.now() - started > BACKFILL_TIME_BUDGET_MS) break;
-    var values = metrics.getRange(cursor, 1, 1, lastCol).getValues();
-    var rec = scoreFromMetricsRow_(values[0], map);
-    if (rec) {
-      var key = rec.id_key + "\0" + rec.program + "\0" + rec.item_id;
-      var existing = indexMap[key];
-      if (!existing || scoreRecIsNewer_(rec, existing)) {
-        if (existing && existing.row) rec.row = existing.row;
-        indexMap[key] = rec;
-        changed[key] = 1;
-        merged++;
+    var batchEnd = Math.min(lastRow, cursor + METRICS_READ_BATCH - 1);
+    var numRows = batchEnd - cursor + 1;
+    var values = metrics.getRange(cursor, 1, numRows, lastCol).getValues();
+    for (var ri = 0; ri < values.length; ri++) {
+      var rec = scoreFromMetricsRow_(values[ri], map);
+      if (rec) {
+        var key = rec.id_key + "\0" + rec.program + "\0" + rec.item_id;
+        var existing = indexMap[key];
+        if (!existing || scoreRecIsNewer_(rec, existing)) {
+          if (existing && existing.row) rec.row = existing.row;
+          indexMap[key] = rec;
+          changed[key] = 1;
+          merged++;
+        }
       }
+      processed++;
     }
-    cursor++;
-    processed++;
+    cursor = batchEnd + 1;
   }
 
-  flushScoreIndexMap_(ss, indexMap, changed);
+  var flushed = flushScoreIndexMap_(ss, indexMap, changed);
+  if (!flushed) {
+    props.setProperty(BACKFILL_PROP, String(runStartCursor));
+    return {
+      ok: true,
+      done: false,
+      flush_busy: true,
+      nextRow: runStartCursor,
+      processed: processed,
+      merged: merged
+    };
+  }
 
   if (cursor > lastRow) {
     props.deleteProperty(BACKFILL_PROP);
@@ -1070,24 +1098,38 @@ function readScoreIndexMap_(ss) {
 }
 
 function flushScoreIndexMap_(ss, map, changed) {
-  var sheet = ensureScoreSheet_(ss);
-  var keys = changed ? Object.keys(changed) : Object.keys(map);
-  for (var i = 0; i < keys.length; i++) {
-    var rec = map[keys[i]];
-    if (!rec) continue;
-    var row = [
-      textCell_(rec.id_key),
-      textCell_(rec.program),
-      textCell_(rec.item_id),
-      scoreCell_(rec.score_value),
-      scoreCell_(rec.score_max),
-      scoreCell_(rec.score_pct),
-      textCell_(rec.local_date),
-      textCell_(rec.updated_at)
-    ];
-    var rowNumber = rec.row || 0;
-    if (!rowNumber) rowNumber = Math.max(sheet.getLastRow(), 1) + 1;
-    sheet.getRange(rowNumber, 1, 1, row.length).setValues([row]);
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(FLUSH_LOCK_MS)) return false;
+  try {
+    var sheet = ensureScoreSheet_(ss);
+    var liveMap = readScoreIndexMap_(ss);
+    var keys = changed ? Object.keys(changed) : Object.keys(map);
+    for (var i = 0; i < keys.length; i++) {
+      var rec = map[keys[i]];
+      if (!rec) continue;
+      var live = liveMap[keys[i]];
+      if (live && !scoreRecIsNewer_(rec, live)) continue;
+      if (live && live.row) rec.row = live.row;
+      var row = [
+        textCell_(rec.id_key),
+        textCell_(rec.program),
+        textCell_(rec.item_id),
+        scoreCell_(rec.score_value),
+        scoreCell_(rec.score_max),
+        scoreCell_(rec.score_pct),
+        textCell_(rec.local_date),
+        textCell_(rec.updated_at)
+      ];
+      var rowNumber = rec.row || 0;
+      if (!rowNumber) rowNumber = Math.max(sheet.getLastRow(), 1) + 1;
+      var range = sheet.getRange(rowNumber, 1, 1, row.length);
+      range.setNumberFormat("@");
+      range.setValues([row]);
+      rec.row = rowNumber;
+    }
+    return true;
+  } finally {
+    lock.releaseLock();
   }
 }
 

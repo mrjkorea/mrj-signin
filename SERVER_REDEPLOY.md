@@ -38,9 +38,12 @@ If you roll back to the pre-1.4.0 script after students have used 1.4.0:
 3. **Deploy → Manage deployments** → **Edit** the **existing** Web app deployment → **New version** (same `/exec` URL).
 4. **GET** `/exec` → `"version":"1.4.0"`.
 5. **Run → `backfillStudentScoreIndex`** repeatedly until execution log shows `{ done: true }` (each run processes metrics rows for up to ~4.5 minutes).
-6. Optional: **Triggers** → `stampRecentNames`, every 10 minutes.
-7. Publish updated **`mrj-auth.js`** on GitHub Pages (`AUTH_VERSION` `20261007-progress-1.4`).
-8. Live test with **`zz_test_mrjmetrics` only**.
+6. **Pre-create tab `AppProgressMore`** (recommended before first deploy): headers `id_key`, `program`, `part`, `chunk` — avoids a rare race on the first chunked `load_pack`/`save_pack` when the tab does not exist yet.
+7. Optional: **Triggers** → `stampRecentNames`, every 10 minutes.
+8. Publish updated **`mrj-auth.js`** on GitHub Pages (`AUTH_VERSION` `20261007-progress-1.4`).
+9. Live test with **`zz_test_mrjmetrics` only**.
+
+**Backfill:** `backfillStudentScoreIndex` holds a **short script lock only while flushing** each batch to StudentScoreIndex (reads stay lock-free). If flush is busy (`flush_busy: true`), re-run after class; the cursor rewinds that batch. Run when students are idle if possible.
 
 ## Rollback procedure
 
