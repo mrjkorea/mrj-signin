@@ -50,6 +50,74 @@ describe("Code.gs (vm)", () => {
     assert.equal(out, stored);
   });
 
+  it("textCell_ round-trips chunk boundaries starting with ', =, +, -, @", () => {
+    const ctx = createGasContext();
+    const chunk = ctx.CHUNK_CHAR_MAX;
+    const specials = ["'", "=", "+", "-", "@"];
+    for (const ch of specials) {
+      const tail = `${ch}boundary-marker`;
+      const payload = "x".repeat(chunk) + tail;
+      const pieces = ctx.splitProgressChunks_(payload).chunks;
+      assert.ok(pieces.length >= 2);
+      assert.equal(pieces[1].charAt(0), ch);
+      const ss = ctx.SpreadsheetApp.openById("x");
+      const accounts = ctx.ensureSheet("StudentAccounts");
+      accounts.appendRow(["kid", "kid", "pw", "", "", "tok12345678901234567890123456789012"]);
+      const body = {
+        id: "kid",
+        token: "tok12345678901234567890123456789012",
+        program: `prog-${ch}`,
+        progress_json: payload
+      };
+      const saved = ctx.savePack_(body);
+      assert.equal(saved.ok, true);
+      const loaded = ctx.readPackJson_(ss, "kid", `prog-${ch}`);
+      assert.equal(loaded, payload);
+    }
+  });
+
+  it("save_pack reads AppProgressMore at most once per request", () => {
+    const ctx = createGasContext();
+    const ss = ctx.SpreadsheetApp.openById("x");
+    const accounts = ctx.ensureSheet("StudentAccounts");
+    accounts.appendRow(["kid", "kid", "pw", "", "", "tok12345678901234567890123456789012"]);
+    const chunk = ctx.CHUNK_CHAR_MAX;
+    const big = "y".repeat(chunk * 11 + 100);
+    const body = {
+      id: "kid",
+      token: "tok12345678901234567890123456789012",
+      program: "word-master",
+      progress_json: big
+    };
+    const more = ctx.ensureSheet("AppProgressMore");
+    more.dataRangeReadCount = 0;
+    const saved = ctx.savePack_(body);
+    assert.equal(saved.ok, true);
+    assert.equal(more.dataRangeReadCount, 1);
+    assert.equal(ctx.readPackJson_(ss, "kid", "word-master"), big);
+  });
+
+  it("save_pack rejects progress above MAX_PROGRESS_TOTAL_CHARS", () => {
+    const ctx = createGasContext();
+    const accounts = ctx.ensureSheet("StudentAccounts");
+    accounts.appendRow(["kid", "kid", "pw", "", "", "tok12345678901234567890123456789012"]);
+    const tooBig = "z".repeat(ctx.MAX_PROGRESS_TOTAL_CHARS + 1);
+    const saved = ctx.savePack_({
+      id: "kid",
+      token: "tok12345678901234567890123456789012",
+      program: "word-master",
+      progress_json: tooBig
+    });
+    assert.equal(saved.ok, false);
+    assert.equal(saved.error, "too_large");
+    assert.equal(saved.maxChars, ctx.MAX_PROGRESS_TOTAL_CHARS);
+  });
+
+  it("APP_VERSION is 1.4.1 for health/ping", () => {
+    const ctx = createGasContext();
+    assert.equal(ctx.APP_VERSION, "1.4.1");
+  });
+
   it("save_pack stores and loads chunked progress without changing AppProgress columns", () => {
     const ctx = createGasContext();
     const ss = ctx.SpreadsheetApp.openById("x");

@@ -61,13 +61,18 @@ function createGasContext() {
       this._cells = {};
       this._maxRow = 1;
       this._maxCol = 1;
+      this.dataRangeReadCount = 0;
     }
     cell(r, c) {
       const k = r + ":" + c;
       return this._cells[k] == null ? "" : this._cells[k];
     }
     setCell(r, c, v) {
-      this._cells[r + ":" + c] = v;
+      let stored = v;
+      if (typeof stored === "string" && stored.charAt(0) === "'") {
+        stored = stored.slice(1);
+      }
+      this._cells[r + ":" + c] = stored;
       this._maxRow = Math.max(this._maxRow, r);
       this._maxCol = Math.max(this._maxCol, c);
     }
@@ -84,6 +89,7 @@ function createGasContext() {
       return new MockRange(this, r1, c1, r1 + numRows - 1, c1 + numCols - 1);
     }
     getDataRange() {
+      this.dataRangeReadCount++;
       return this.getRange(1, 1, this._maxRow, this._maxCol);
     }
     getSheetByName() {
