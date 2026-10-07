@@ -30,6 +30,13 @@ function mkNode(tag, className) {
       remove(...c) {
         n.classNames = n.classNames.filter((x) => !c.includes(x));
         n.className = n.classNames.join(" ");
+      },
+      toggle(cls, force) {
+        const has = n.classNames.includes(cls);
+        const on = force === undefined ? !has : !!force;
+        if (on && !has) n.classNames.push(cls);
+        if (!on) n.classNames = n.classNames.filter((x) => x !== cls);
+        n.className = n.classNames.join(" ");
       }
     },
     setAttribute(k, v) {
@@ -151,6 +158,14 @@ function loadMrjAuth(fetchImpl, session, timeoutMs) {
       querySelectorAll: () => [],
       createElement: (tag) => mkNode(tag)
     },
+    location: { pathname: "/" },
+    innerWidth: 1024,
+    getComputedStyle: () => ({
+      display: "block",
+      visibility: "visible",
+      opacity: "1"
+    }),
+    requestAnimationFrame: (fn) => setTimeout(fn, 0),
     addEventListener() {},
     removeEventListener() {}
   };

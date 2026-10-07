@@ -97,7 +97,7 @@ describe("student chip and progress panel", () => {
     };
     const { auth, root } = loadMrjAuth(fetch);
     auth.mount(root, { app: "word-master" });
-    const result = await auth._test.fetchAllProgress("kid1", "tok-kid1", "", null, { unlimited: true });
+    const result = await auth._test.fetchAllProgress("kid1", "tok-kid1", "", null, { panel: true });
     assert.equal(calls, 2);
     assert.equal(result.progress.length, 2);
     const filtered = auth._test.filterProgressForApp(result.progress);
@@ -186,8 +186,30 @@ describe("student chip and progress panel", () => {
   });
 
   it("panel error shows retry path", async () => {
-    let panelAttempt = 0;
+    let speakCalls = 0;
     const fetch = loginFetch((b) => {
+      if (b.program === "day4-speak") {
+        speakCalls += 1;
+        if (speakCalls === 1) {
+          return jsonResponse({
+            ok: true,
+            id: "kid1",
+            token: "tok-kid1",
+            progress: [],
+            hasMore: false
+          });
+        }
+        if (speakCalls <= 4) {
+          return jsonResponse({ ok: false, error: "server", message: "busy" });
+        }
+        return jsonResponse({
+          ok: true,
+          id: "kid1",
+          token: "tok-kid1",
+          progress: [{ program: "day4-speak", item_id: "x", score_pct: 70 }],
+          hasMore: false
+        });
+      }
       if (b.program) {
         return jsonResponse({
           ok: true,
@@ -197,17 +219,7 @@ describe("student chip and progress panel", () => {
           hasMore: false
         });
       }
-      panelAttempt += 1;
-      if (panelAttempt < 3) {
-        return jsonResponse({ ok: false, error: "server", message: "busy" });
-      }
-      return jsonResponse({
-        ok: true,
-        id: "kid1",
-        token: "tok-kid1",
-        progress: [{ program: "day4-speak", item_id: "x", score_pct: 70 }],
-        hasMore: false
-      });
+      return jsonResponse({ ok: false, error: "bad_action" });
     });
     const { auth, root, body } = loadMrjAuth(fetch);
     auth.mount(root, { app: "day4-speak" });
@@ -224,6 +236,7 @@ describe("student chip and progress panel", () => {
       });
     })(panel);
     assert.ok(retryBtn);
+    speakCalls = 4;
     retryBtn.listeners.click[0]();
     await wait(500);
     let text = "";

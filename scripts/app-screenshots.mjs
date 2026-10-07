@@ -1,9 +1,8 @@
 #!/usr/bin/env node
 /**
- * Headless screenshots of all 17 classroom apps with local mrj-auth injected.
+ * Headless screenshots + chip collision check (artifacts only; not committed).
  */
 import { chromium } from "playwright";
-import { createServer } from "http";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -11,7 +10,6 @@ import { fileURLToPath } from "url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(__dirname, "..");
 const outDir = path.join(root, "screenshots");
-const port = 9876;
 
 const APPS = [
   { slug: "word-master", url: "https://mrjkorea.github.io/word-master/", programs: ["word-master"] },
@@ -33,25 +31,10 @@ const APPS = [
   { slug: "news-words", url: "https://mrjkorea.github.io/news-words/", programs: ["news-words"] }
 ];
 
-function staticServer() {
-  const mime = {
-    ".js": "application/javascript",
-    ".css": "text/css",
-    ".html": "text/html"
-  };
-  return createServer((req, res) => {
-    const rel = decodeURIComponent(req.url.split("?")[0]).replace(/^\//, "") || "mrj-auth.js";
-    const file = path.join(root, rel);
-    if (!file.startsWith(root) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
-      res.writeHead(404);
-      res.end("not found");
-      return;
-    }
-    const ext = path.extname(file);
-    res.writeHead(200, { "Content-Type": mime[ext] || "text/plain" });
-    res.end(fs.readFileSync(file));
-  });
-}
+const VIEWPORTS = [
+  { name: "1280x800", width: 1280, height: 800 },
+  { name: "390x844", width: 390, height: 844 }
+];
 
 function sampleRows(programs) {
   const p = programs[0];
@@ -61,106 +44,122 @@ function sampleRows(programs) {
   ];
 }
 
+async function chipCollision(page) {
+  return page.evaluate(() => {
+    const chip = document.getElementById("mrj-auth-student-chip");
+    if (!chip || chip.hidden) return "no chip (ok if chip off)";
+    const cr = chip.getBoundingClientRect();
+    const selectors =
+      "button, a, select, input, textarea, [role='button'], [onclick], .pill, [class*='pill'], [class*='badge']";
+    const nodes = document.querySelectorAll(selectors);
+    for (let i = 0; i < nodes.length; i++) {
+      const el = nodes[i];
+      if (!el || el === chip || chip.contains(el)) continue;
+      if (el.closest("#mrj-auth-student-chip, .mrj-auth-panel-root, #mrj-auth-gate")) continue;
+      const st = getComputedStyle(el);
+      if (st.display === "none" || st.visibility === "hidden" || st.opacity === "0") continue;
+      const r = el.getBoundingClientRect();
+      if (r.width < 2 || r.height < 2) continue;
+      const overlap =
+        cr.left < r.right && cr.right > r.left && cr.top < r.bottom && cr.bottom > r.top;
+      if (overlap) {
+        const tag = el.tagName + (el.className ? "." + String(el.className).split(" ")[0] : "");
+        return "overlap: " + tag;
+      }
+    }
+    return "ok";
+  });
+}
+
+async function runApp(browser, app, vp) {
+  const page = await browser.newPage({ viewport: { width: vp.width, height: vp.height } });
+  const rows = sampleRows(app.programs);
+  await page.route("**/mrj-signin/mrj-auth.js**", (route) =>
+    route.fulfill({ status: 200, contentType: "application/javascript", path: path.join(root, "mrj-auth.js") })
+  );
+  await page.route("**/mrj-signin/mrj-auth.css**", (route) =>
+    route.fulfill({ status: 200, contentType: "text/css", path: path.join(root, "mrj-auth.css") })
+  );
+  await page.route("**/mrj-signin/mrj-auth-boot.js**", (route) =>
+    route.fulfill({ status: 200, contentType: "application/javascript", path: path.join(root, "mrj-auth-boot.js") })
+  );
+  await page.route("**/macros/s/**/exec**", async (route) => {
+    let body = {};
+    try {
+      body = JSON.parse(route.request().postData() || "{}");
+    } catch {
+      body = {};
+    }
+    if (body.action === "login" || body.action === "register") {
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({ ok: true, id: "DemoKid", token: "demo-tok", progress: [] })
+      });
+      return;
+    }
+    if (body.action === "progress") {
+      const prog = body.program || "";
+      const filtered = rows.filter((r) => !prog || r.program === prog);
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          ok: true,
+          id: "DemoKid",
+          token: "demo-tok",
+          progress: filtered.length ? filtered : rows,
+          hasMore: false,
+          total: filtered.length || rows.length
+        })
+      });
+      return;
+    }
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ ok: true }) });
+  });
+
+  await page.addInitScript(() => {
+    try {
+      localStorage.setItem("mrj.auth.session", JSON.stringify({ id: "DemoKid", token: "demo-tok" }));
+    } catch (e) {}
+  });
+
+  let chipStatus = "error";
+  let panelStatus = "error";
+  try {
+    await page.goto(app.url, { waitUntil: "domcontentloaded", timeout: 60000 });
+    await page.waitForTimeout(4500);
+    if (app.chipOff) {
+      chipStatus = "chip off";
+    } else {
+      await page.locator("#mrj-auth-student-chip").waitFor({ state: "visible", timeout: 20000 });
+      await page.waitForTimeout(500);
+      chipStatus = await chipCollision(page);
+      await page.screenshot({ path: path.join(outDir, `${app.slug}-${vp.name}-chip.png`) });
+    }
+    if (app.chipOff) {
+      await page.evaluate(() => window.MRJ_AUTH && window.MRJ_AUTH.openProgressPanel());
+    } else {
+      await page.locator("#mrj-auth-student-chip").click();
+    }
+    await page.locator(".mrj-auth-panel").waitFor({ state: "visible", timeout: 15000 });
+    panelStatus = "ok";
+    await page.screenshot({ path: path.join(outDir, `${app.slug}-${vp.name}-panel.png`) });
+  } catch (err) {
+    chipStatus = String(err.message || err);
+  }
+  await page.close();
+  return { slug: app.slug, viewport: vp.name, chip: chipStatus, panel: panelStatus };
+}
+
 async function main() {
   fs.mkdirSync(outDir, { recursive: true });
-  const server = staticServer();
-  await new Promise((r) => server.listen(port, r));
-  const base = `http://127.0.0.1:${port}`;
   const browser = await chromium.launch();
   const results = [];
-
-  for (const app of APPS) {
-    const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
-    const rows = sampleRows(app.programs);
-    await page.route("**/mrj-signin/mrj-auth.js**", (route) =>
-      route.fulfill({ status: 200, contentType: "application/javascript", path: path.join(root, "mrj-auth.js") })
-    );
-    await page.route("**/mrj-signin/mrj-auth.css**", (route) =>
-      route.fulfill({ status: 200, contentType: "text/css", path: path.join(root, "mrj-auth.css") })
-    );
-    await page.route("**/mrj-signin/mrj-auth-boot.js**", (route) =>
-      route.fulfill({ status: 200, contentType: "application/javascript", path: path.join(root, "mrj-auth-boot.js") })
-    );
-    await page.route("**/macros/s/**/exec**", async (route) => {
-      let body = {};
-      try {
-        body = JSON.parse(route.request().postData() || "{}");
-      } catch {
-        body = {};
-      }
-      if (body.action === "login" || body.action === "register") {
-        await route.fulfill({
-          contentType: "application/json",
-          body: JSON.stringify({ ok: true, id: "DemoKid", token: "demo-tok", progress: [] })
-        });
-        return;
-      }
-      if (body.action === "progress") {
-        await route.fulfill({
-          contentType: "application/json",
-          body: JSON.stringify({
-            ok: true,
-            id: "DemoKid",
-            token: "demo-tok",
-            progress: rows,
-            hasMore: false,
-            total: rows.length
-          })
-        });
-        return;
-      }
-      if (body.action === "load_pack" || body.action === "save_pack") {
-        await route.fulfill({
-          contentType: "application/json",
-          body: JSON.stringify({ ok: true, found: false, progress_json: "{}" })
-        });
-        return;
-      }
-      await route.fulfill({ contentType: "application/json", body: JSON.stringify({ ok: true }) });
-    });
-
-    await page.addInitScript(() => {
-      try {
-        localStorage.setItem("mrj.auth.session", JSON.stringify({ id: "DemoKid", token: "demo-tok" }));
-      } catch (e) {}
-    });
-
-    let overlapNote = "";
-    try {
-      await page.goto(app.url, { waitUntil: "domcontentloaded", timeout: 60000 });
-      await page.waitForTimeout(4000);
-      if (app.chipOff) {
-        await page.evaluate(() => {
-          if (window.MRJ_AUTH && window.MRJ_AUTH.openProgressPanel) window.MRJ_AUTH.openProgressPanel();
-        });
-      } else {
-        const chip = page.locator("#mrj-auth-student-chip");
-        await chip.waitFor({ state: "visible", timeout: 20000 });
-        await page.screenshot({ path: path.join(outDir, `${app.slug}-chip.png`) });
-        await chip.click();
-      }
-      await page.locator(".mrj-auth-panel").waitFor({ state: "visible", timeout: 15000 });
-      await page.screenshot({ path: path.join(outDir, `${app.slug}-panel.png`), fullPage: false });
-      overlapNote = await page.evaluate(() => {
-        const chip = document.getElementById("mrj-auth-student-chip");
-        if (!chip || chip.hidden) return "chip off or hidden (OK for Zap)";
-        const r = chip.getBoundingClientRect();
-        const cx = (r.left + r.right) / 2;
-        const cy = (r.top + r.bottom) / 2;
-        const el = document.elementFromPoint(cx, cy);
-        if (!el || el === chip || chip.contains(el)) return "OK";
-        const tag = el.className || el.id || el.tagName;
-        return "overlap at chip center: " + tag;
-      });
-    } catch (err) {
-      overlapNote = "screenshot failed: " + String(err.message || err);
+  for (const vp of VIEWPORTS) {
+    for (const app of APPS) {
+      results.push(await runApp(browser, app, vp));
     }
-    results.push({ ...app, overlapNote });
-    await page.close();
   }
-
   await browser.close();
-  server.close();
   fs.writeFileSync(path.join(outDir, "results.json"), JSON.stringify(results, null, 2));
   console.log(JSON.stringify(results, null, 2));
 }

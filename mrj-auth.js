@@ -119,7 +119,11 @@
   var packState = {};
   var PROGRESS_PAGE_SIZE = 500;
   var PROGRESS_MAX_PAGES = 40;
-  var PROGRESS_PANEL_MAX_PAGES = 500;
+  var PROGRESS_PANEL_MAX_PAGES = 40;
+  var DAY2_PACK_ITEM_RE = /^(basic_[abc]|int[23][abc])_u\d+:/;
+  var DECODABLE_41_ITEM_RE = /^mlr_dec_(04[1-9]|0[5-6]\d|070):/;
+  var DECODABLE_71_ITEM_RE = /^mlr_dec_(07[1-9]|0[89]\d|100):/;
+  var WHISTLE_ITEM_RE = /^whistle:/;
   var APP_SCORE_PROGRAM_MAP = {
     "word-master": ["word-master"],
     "day2-words": ["day2-words", "word-master"],
@@ -134,6 +138,7 @@
     "skill-builder-g1": ["skill-builder-g1"],
     "mrj-zap-grammar-books": ["greenzap"],
     "pronounce": ["pronounce"],
+    "pronounce-whistle": ["pronounce"],
     "mrj-decodable-try-41": ["decodable"],
     "mrj-decodable-try-71": ["decodable"],
     "news-words": ["news-words"]
@@ -146,6 +151,10 @@
   var panelFetchGen = 0;
   var panelOpen = false;
   var panelKeyHandler = null;
+  var panelRowsProvider = null;
+  var chipMutationObserver = null;
+  var chipLayoutScheduled = false;
+  var chipLayoutLastRun = 0;
   var busy = false;
   var loginFlightSeq = 0;
   var activeLoginFlight = null;
@@ -300,6 +309,45 @@
     return false;
   }
 
+  function readBootAttr_(name) {
+    try {
+      var doc = global.document;
+      if (!doc) return "";
+      if (options && options.bootAttrs && options.bootAttrs[name]) {
+        return String(options.bootAttrs[name]);
+      }
+      var boot = doc.querySelector && doc.querySelector("script[data-mrj-app][src*='mrj-auth-boot']");
+      if (boot && boot.getAttribute) {
+        var v = boot.getAttribute(name);
+        if (v != null && String(v).trim()) return String(v).trim();
+      }
+      if (doc.documentElement && doc.documentElement.getAttribute) {
+        var hv = doc.documentElement.getAttribute(name);
+        if (hv != null && String(hv).trim()) return String(hv).trim();
+      }
+      if (doc.body && doc.body.getAttribute) {
+        var bv = doc.body.getAttribute(name);
+        if (bv != null && String(bv).trim()) return String(bv).trim();
+      }
+    } catch (ignore) {}
+    return "";
+  }
+
+  function panelAppKey_() {
+    var override = (options && options.panelApp) || readBootAttr_("data-mrj-panel-app");
+    if (override && String(override).trim()) {
+      return String(override).trim().toLowerCase();
+    }
+    var key = appKey_();
+    if (key === "pronounce") {
+      try {
+        var path = global.location && global.location.pathname ? String(global.location.pathname) : "";
+        if (path.indexOf("/pronounce-whistle/") !== -1) return "pronounce-whistle";
+      } catch (ignore) {}
+    }
+    return key;
+  }
+
   function scoreProgramsForApp_() {
     var override = options && options.scorePrograms;
     if (override != null && String(override).trim()) {
@@ -308,12 +356,61 @@
         .map(function (s) { return String(s).trim(); })
         .filter(Boolean);
     }
-    var key = appKey_();
+    var key = panelAppKey_();
     if (key && APP_SCORE_PROGRAM_MAP[key]) {
       return APP_SCORE_PROGRAM_MAP[key].slice();
     }
+    if (key && APP_SCORE_PROGRAM_MAP[appKey_()]) {
+      return APP_SCORE_PROGRAM_MAP[appKey_()].slice();
+    }
     if (key) return [key];
     return [];
+  }
+
+  function compileItemRegex_(source) {
+    if (!source || !String(source).trim()) return null;
+    try {
+      return new RegExp(String(source).trim());
+    } catch (ignore) {
+      return null;
+    }
+  }
+
+  function bootItemInclude_() {
+    var s = (options && options.itemInclude) || readBootAttr_("data-mrj-item-include");
+    return compileItemRegex_(s);
+  }
+
+  function bootItemExclude_() {
+    var s = (options && options.itemExclude) || readBootAttr_("data-mrj-item-exclude");
+    return compileItemRegex_(s);
+  }
+
+  function rowPassesItemFilter_(row) {
+    var itemId = rowItemId_(row);
+    if (!itemId) return false;
+    var prog = rowProgramName_(row).toLowerCase();
+    var key = panelAppKey_();
+
+    if (key === "word-master") {
+      if (DAY2_PACK_ITEM_RE.test(itemId)) return false;
+    } else if (key === "day2-words") {
+      if (prog === "word-master" && !DAY2_PACK_ITEM_RE.test(itemId)) return false;
+    } else if (key === "pronounce-whistle") {
+      if (!WHISTLE_ITEM_RE.test(itemId)) return false;
+    } else if (key === "pronounce") {
+      if (WHISTLE_ITEM_RE.test(itemId)) return false;
+    } else if (key === "mrj-decodable-try-41") {
+      if (!DECODABLE_41_ITEM_RE.test(itemId)) return false;
+    } else if (key === "mrj-decodable-try-71") {
+      if (!DECODABLE_71_ITEM_RE.test(itemId)) return false;
+    }
+
+    var inc = bootItemInclude_();
+    if (inc && !inc.test(itemId)) return false;
+    var exc = bootItemExclude_();
+    if (exc && exc.test(itemId)) return false;
+    return true;
   }
 
   function programNameSet_() {
@@ -359,6 +456,7 @@
       score_pct: scorePct,
       local_date: row.local_date || row.localDate || row.date || "",
       updated_at: row.updated_at || row.updatedAt || "",
+      label: row.label != null ? String(row.label) : "",
       scoreText: scoreText
     };
   }
@@ -418,7 +516,10 @@
     return Math.round(sum / n);
   }
 
-  function itemLabel_(itemId) {
+  function itemLabel_(itemId, row) {
+    if (row && row.label != null && String(row.label).trim()) {
+      return String(row.label).trim();
+    }
     try {
       var labels = global.MRJ_ITEM_LABELS;
       if (labels && typeof labels === "object" && labels[itemId] != null) {
@@ -517,6 +618,7 @@
     packState = {};
     clearSession_();
     closeProgressPanel();
+    disconnectChipObserver_();
     updateStudentChip_();
     if (rootEl) renderDoors_();
   }
@@ -761,15 +863,22 @@
 
   function fetchAllProgress_(id, tokenValue, program, hook, fetchOpts) {
     fetchOpts = fetchOpts || {};
-    var maxPages = fetchOpts.unlimited ? PROGRESS_PANEL_MAX_PAGES : PROGRESS_MAX_PAGES;
+    var maxPages = fetchOpts.panel ? PROGRESS_PANEL_MAX_PAGES : PROGRESS_MAX_PAGES;
     var all = [];
     var offset = 0;
     var nextId = id;
     var nextToken = tokenValue;
     var pages = 0;
+    var hitCap = false;
     function pullPage() {
+      if (fetchOpts.cancelCheck && fetchOpts.cancelCheck()) {
+        return Promise.resolve({ ok: false, error: "cancelled" });
+      }
       pages += 1;
       return post_(progressBody_(id, tokenValue, program, offset), hook).then(function (data) {
+        if (fetchOpts.cancelCheck && fetchOpts.cancelCheck()) {
+          return { ok: false, error: "cancelled" };
+        }
         if (!data || !data.ok) {
           return {
             ok: false,
@@ -779,8 +888,10 @@
             token: data && data.token ? data.token : nextToken
           };
         }
-        if (data.id) nextId = data.id;
-        if (data.token) nextToken = data.token;
+        if (!fetchOpts.panel) {
+          if (data.id) nextId = data.id;
+          if (data.token) nextToken = data.token;
+        }
         var chunk = Array.isArray(data.progress) ? data.progress : [];
         all = all.concat(chunk);
         var hasMore = data.hasMore === true;
@@ -788,7 +899,10 @@
           hasMore = true;
         }
         if (typeof data.total === "number" && all.length >= data.total) hasMore = false;
-        if (pages >= maxPages) hasMore = false;
+        if (pages >= maxPages) {
+          if (hasMore) hitCap = true;
+          hasMore = false;
+        }
         if (hasMore && chunk.length > 0) {
           offset += chunk.length;
           return pullPage();
@@ -797,7 +911,8 @@
           ok: true,
           id: nextId,
           token: nextToken,
-          progress: all
+          progress: all,
+          capped: hitCap
         };
       });
     }
@@ -808,20 +923,117 @@
     var programSet = programNameSet_();
     var out = [];
     (rows || []).forEach(function (row) {
-      if (rowMatchesAppPrograms_(row, programSet)) out.push(row);
+      if (!rowMatchesAppPrograms_(row, programSet)) return;
+      if (!rowPassesItemFilter_(row)) return;
+      out.push(row);
     });
     return out;
   }
 
-  function fetchPanelProgress_(snap) {
-    return fetchAllProgress_(snap.id, snap.token, "", null, { unlimited: true }).then(function (result) {
+  function providerRowToRaw_(row) {
+    row = row || {};
+    return {
+      program: row.program || "",
+      item_id: row.item_id || row.itemId || row.item || "",
+      itemId: row.item_id || row.itemId || row.item || "",
+      score_value: row.score_value != null ? row.score_value : row.scoreValue,
+      score_max: row.score_max != null ? row.score_max : row.scoreMax,
+      score_pct: row.score_pct != null ? row.score_pct : row.scorePct,
+      local_date: row.local_date || row.localDate || row.date || "",
+      label: row.label != null ? String(row.label) : ""
+    };
+  }
+
+  function mergeProviderRows_(serverRows, providerRows) {
+    var map = {};
+    (serverRows || []).forEach(function (row) {
+      var id = rowItemId_(row);
+      if (!id) return;
+      map[id] = row;
+    });
+    (providerRows || []).forEach(function (row) {
+      var raw = providerRowToRaw_(row);
+      var id = rowItemId_(raw);
+      if (!id) return;
+      map[id] = raw;
+    });
+    var out = [];
+    for (var k in map) {
+      if (Object.prototype.hasOwnProperty.call(map, k)) out.push(map[k]);
+    }
+    return out;
+  }
+
+  function invokePanelRowsProvider_(studentId) {
+    if (!panelRowsProvider) return Promise.resolve([]);
+    try {
+      var out = panelRowsProvider(studentId);
+      if (out && typeof out.then === "function") return out.then(function (rows) {
+        return Array.isArray(rows) ? rows : [];
+      });
+      return Promise.resolve(Array.isArray(out) ? out : []);
+    } catch (ignore) {
+      return Promise.resolve([]);
+    }
+  }
+
+  function setPanelRowsProvider(fn) {
+    try {
+      panelRowsProvider = typeof fn === "function" ? fn : null;
+    } catch (ignore) {
+      panelRowsProvider = null;
+    }
+  }
+
+  function fetchPanelProgress_(snap, fetchOpts) {
+    fetchOpts = fetchOpts || {};
+    var programs = scoreProgramsForApp_();
+    var capped = false;
+
+    function runPrograms(list, index, acc) {
+      if (fetchOpts.cancelCheck && fetchOpts.cancelCheck()) {
+        return Promise.resolve({ ok: false, error: "cancelled" });
+      }
+      if (index >= list.length) {
+        return Promise.resolve({ ok: true, progress: acc, capped: capped });
+      }
+      var prog = list[index];
+      return fetchAllProgress_(snap.id, snap.token, prog, null, {
+        panel: true,
+        cancelCheck: fetchOpts.cancelCheck
+      }).then(function (result) {
+        if (fetchOpts.cancelCheck && fetchOpts.cancelCheck()) {
+          return { ok: false, error: "cancelled" };
+        }
+        if (!result || !result.ok) return result;
+        if (result.capped) capped = true;
+        return runPrograms(list, index + 1, acc.concat(result.progress || []));
+      });
+    }
+
+    var chain;
+    if (programs.length) {
+      chain = runPrograms(programs, 0, []);
+    } else {
+      chain = fetchAllProgress_(snap.id, snap.token, "", null, {
+        panel: true,
+        cancelCheck: fetchOpts.cancelCheck
+      });
+    }
+
+    return chain.then(function (result) {
       if (!result || !result.ok) return result;
-      return {
-        ok: true,
-        id: result.id,
-        token: result.token,
-        progress: filterProgressForApp_(result.progress)
-      };
+      var filtered = filterProgressForApp_(result.progress || []);
+      return invokePanelRowsProvider_(snap.id).then(function (providerRows) {
+        if (fetchOpts.cancelCheck && fetchOpts.cancelCheck()) {
+          return { ok: false, error: "cancelled" };
+        }
+        return {
+          ok: true,
+          progress: mergeProviderRows_(filtered, providerRows),
+          capped: !!(result.capped || capped)
+        };
+      });
     });
   }
 
@@ -842,21 +1054,28 @@
   }
 
   function loadPlace_(id, tokenValue) {
+    var loadGen = sessionGen;
+    var loadId = id == null ? "" : String(id);
+    var loadToken = tokenValue == null ? "" : String(tokenValue);
     renderStatus_(MESSAGES.loading_place);
-    fetchAllProgress_(id, tokenValue, appProgram_()).then(function (result) {
+    fetchAllProgress_(loadId, loadToken, appProgram_()).then(function (result) {
+      if (loadGen !== sessionGen) return;
+      if (state.id && rules.idKey(state.id) !== rules.idKey(loadId)) return;
       if (result && result.ok) {
-        finish_(result.id || id, result.token || tokenValue, result.progress);
+        finish_(result.id || loadId, result.token || loadToken, result.progress);
         return;
       }
       if (sessionRejected_(result)) {
-        renderLogin_("Sign in again.", [id, ""]);
+        renderLogin_("Sign in again.", [loadId, ""]);
         return;
       }
       var err = (result && result.error) ? result.error : "progress_load_failed";
-      finish_((result && result.id) || id, (result && result.token) || tokenValue, [], err);
+      finish_((result && result.id) || loadId, (result && result.token) || loadToken, [], err);
       retryProgressInBackground_(state.id, state.token);
     }).catch(function () {
-      finish_(id, tokenValue, [], "network");
+      if (loadGen !== sessionGen) return;
+      if (state.id && rules.idKey(state.id) !== rules.idKey(loadId)) return;
+      finish_(loadId, loadToken, [], "network");
       retryProgressInBackground_(state.id, state.token);
     });
   }
@@ -1086,6 +1305,147 @@
     return { label: label, type: type, autocomplete: autocomplete };
   }
 
+  function disconnectChipObserver_() {
+    try {
+      if (chipMutationObserver && chipMutationObserver.disconnect) {
+        chipMutationObserver.disconnect();
+      }
+    } catch (ignore) {}
+    chipMutationObserver = null;
+  }
+
+  function installChipObserver_() {
+    if (!global.document || !global.document.body || chipMutationObserver) return;
+    if (typeof MutationObserver !== "function") return;
+    chipMutationObserver = new MutationObserver(function () {
+      scheduleChipLayout_();
+    });
+    try {
+      chipMutationObserver.observe(global.document.body, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ["class", "style", "hidden"]
+      });
+    } catch (ignore) {}
+  }
+
+  function scheduleChipLayout_() {
+    if (!chipEl || chipEl.hidden) return;
+    if (chipLayoutScheduled) return;
+    chipLayoutScheduled = true;
+    var raf = global.requestAnimationFrame || function (fn) { setTimeout(fn, 16); };
+    raf(function () {
+      chipLayoutScheduled = false;
+      var now = Date.now();
+      if (now - chipLayoutLastRun < 500) return;
+      chipLayoutLastRun = now;
+      adjustChipPosition_();
+    });
+  }
+
+  function chipOffsetStyles_() {
+    var top = readBootAttr_("data-mrj-chip-top") || (options && options.chipTop) || "";
+    var right = readBootAttr_("data-mrj-chip-right") || (options && options.chipRight) || "";
+    return { top: top, right: right };
+  }
+
+  function rectsOverlap_(a, b) {
+    return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+  }
+
+  function isChipObstacle_(node) {
+    if (!node || node.nodeType !== 1) return false;
+    if (node === chipEl || node === panelRootEl) return false;
+    if (node.closest && node.closest("#mrj-auth-student-chip, .mrj-auth-panel-root, #mrj-auth-gate, .mrj-auth")) {
+      return false;
+    }
+    try {
+      var style = global.getComputedStyle ? global.getComputedStyle(node) : null;
+      if (style) {
+        if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") return false;
+      }
+      if (node.hidden) return false;
+      var r = node.getBoundingClientRect();
+      if (!r || r.width < 2 || r.height < 2) return false;
+      if (r.bottom < 0 || r.top > (global.innerHeight || 800)) return false;
+    } catch (ignore) {
+      return false;
+    }
+    var tag = (node.tagName || "").toLowerCase();
+    if (tag === "button" || tag === "a" || tag === "select" || tag === "input" || tag === "textarea") {
+      return true;
+    }
+    if (node.getAttribute && node.getAttribute("role") === "button") return true;
+    if (node.getAttribute && node.getAttribute("onclick")) return true;
+    if (node.classList) {
+      if (node.classList.contains("pill")) return true;
+      var cls = node.className && String(node.className);
+      if (cls && (cls.indexOf("pill") !== -1 || cls.indexOf("badge") !== -1)) return true;
+    }
+    return false;
+  }
+
+  function collectChipObstacles_() {
+    var out = [];
+    if (!global.document || !global.document.querySelectorAll) return out;
+    var nodes = global.document.querySelectorAll(
+      "button, a, select, input, textarea, [role='button'], [onclick], .pill, [class*='pill'], [class*='badge']"
+    );
+    for (var i = 0; i < nodes.length; i++) {
+      if (isChipObstacle_(nodes[i])) out.push(nodes[i]);
+    }
+    return out;
+  }
+
+  function adjustChipPosition_() {
+    if (!chipEl || chipEl.hidden || !global.document) return;
+    try {
+      var vw = global.innerWidth || 800;
+      var compact = vw < 480;
+      chipEl.classList.toggle("mrj-auth-chip-compact", compact);
+      var offsets = chipOffsetStyles_();
+      var baseTop = offsets.top
+        ? offsets.top
+        : "calc(0.55rem + env(safe-area-inset-top, 0px))";
+      var baseRight = offsets.right
+        ? offsets.right
+        : "calc(0.55rem + env(safe-area-inset-right, 0px))";
+      chipEl.style.top = baseTop;
+      chipEl.style.right = baseRight;
+      chipEl.style.marginRight = "";
+      chipEl.style.marginTop = "";
+      var displayId = state.id || "";
+      if (compact && displayId.length > 10) {
+        chipEl.textContent = displayId.slice(0, 8) + "…";
+        chipEl.title = displayId;
+      } else {
+        chipEl.textContent = displayId;
+        chipEl.title = "";
+      }
+      var obstacles = collectChipObstacles_();
+      var maxIter = 24;
+      var extraTop = 0;
+      while (maxIter-- > 0) {
+        var chipRect = chipEl.getBoundingClientRect();
+        if (!chipRect || !chipRect.width) break;
+        var bump = 0;
+        for (var j = 0; j < obstacles.length; j++) {
+          var or = obstacles[j].getBoundingClientRect();
+          if (!or || !or.width) continue;
+          if (or.top > chipRect.bottom + 40) continue;
+          if (rectsOverlap_(chipRect, or)) {
+            var need = or.bottom - chipRect.top + 6;
+            if (need > bump) bump = need;
+          }
+        }
+        if (bump <= 0) break;
+        extraTop += bump;
+        chipEl.style.marginTop = extraTop + "px";
+      }
+    } catch (ignore) {}
+  }
+
   function ensureChipDom_() {
     if (!global.document || !global.document.body) return;
     if (!chipEl) {
@@ -1100,11 +1460,8 @@
       });
       global.document.body.appendChild(chipEl);
       if (global.addEventListener) {
-        global.addEventListener("resize", function () {
-          try {
-            adjustChipInset_();
-          } catch (ignore) {}
-        });
+        global.addEventListener("resize", function () { scheduleChipLayout_(); });
+        global.addEventListener("orientationchange", function () { scheduleChipLayout_(); });
       }
     }
     if (!panelRootEl) {
@@ -1125,36 +1482,9 @@
         return;
       }
       chipEl.hidden = false;
-      chipEl.textContent = state.id;
       chipEl.setAttribute("aria-label", "My scores for " + state.id);
-      adjustChipInset_();
-    } catch (ignore) {}
-  }
-
-  function adjustChipInset_() {
-    if (!chipEl || chipEl.hidden || !global.document) return;
-    try {
-      chipEl.style.marginRight = "";
-      chipEl.style.top = "calc(0.55rem + env(safe-area-inset-top, 0px))";
-      var chipRect = chipEl.getBoundingClientRect && chipEl.getBoundingClientRect();
-      if (!chipRect || !chipRect.width) return;
-      var viewportW = global.innerWidth || 800;
-      var selectors = [".topbar .pill:last-child", ".student-pill", ".hud .topbar > *:last-child"];
-      var maxRight = 0;
-      for (var s = 0; s < selectors.length; s++) {
-        var nodes = global.document.querySelectorAll(selectors[s]);
-        for (var i = 0; i < nodes.length; i++) {
-          var node = nodes[i];
-          if (!node || node === chipEl) continue;
-          if (node.closest && node.closest("#mrj-auth-student-chip, .mrj-auth-panel-root, #mrj-auth-gate")) continue;
-          var r = node.getBoundingClientRect();
-          if (!r || !r.width || !r.height) continue;
-          if (r.top > 120 || r.right < viewportW * 0.45) continue;
-          var overlap = r.right - (viewportW - chipRect.width - 16);
-          if (overlap > maxRight) maxRight = overlap;
-        }
-      }
-      if (maxRight > 8) chipEl.style.marginRight = Math.ceil(maxRight + 12) + "px";
+      installChipObserver_();
+      adjustChipPosition_();
     } catch (ignore) {}
   }
 
@@ -1211,7 +1541,8 @@
     body.appendChild(retry);
   }
 
-  function renderPanelRows_(body, rows) {
+  function renderPanelRows_(body, rows, meta) {
+    meta = meta || {};
     clear_(body);
     var normalized = sortPanelRows_(rows.map(normalizeProgressRow_));
     var avg = averagePct_(normalized);
@@ -1222,16 +1553,21 @@
       (normalized.length === 1 ? "" : "s") +
       (avg != null ? " · average " + avg + "%" : "");
     body.appendChild(summary);
+    if (meta.capped) {
+      var cap = el_("p", "mrj-auth-panel-cap");
+      cap.textContent = "Showing the most recent scores we could load. Ask your teacher if something is missing.";
+      body.appendChild(cap);
+    }
     if (!normalized.length) {
       var empty = el_("p", "mrj-auth-empty");
-      empty.textContent = "No scores in this app yet.";
+      empty.textContent = "No scores yet.";
       body.appendChild(empty);
       return;
     }
     var list = el_("ul", "mrj-auth-panel-list");
     normalized.forEach(function (row) {
       var item = el_("li", "mrj-auth-panel-row");
-      var label = itemLabel_(row.item_id);
+      var label = itemLabel_(row.item_id, row);
       if (label) {
         var main = el_("span", "mrj-auth-prog-main");
         main.textContent = label;
@@ -1268,22 +1604,22 @@
     }
     if (!body) return;
     renderPanelLoading_(body);
-    fetchPanelProgress_(snap).then(function (result) {
-      if (!panelOpen || fetchGen !== panelFetchGen) return;
-      if (!sessionMatches_(snap)) return;
+    function cancelled() {
+      return !panelOpen || fetchGen !== panelFetchGen || !sessionMatches_(snap);
+    }
+    fetchPanelProgress_(snap, { cancelCheck: cancelled }).then(function (result) {
+      if (cancelled()) return;
       if (!result || !result.ok) {
+        if (result && result.error === "cancelled") return;
         renderPanelError_(body, (result && result.message) || "Could not load scores.", function () {
           if (!state.id || !state.token) return;
           loadPanelProgress_(fetchGen, captureSession_());
         });
         return;
       }
-      if (result.token) state.token = String(result.token);
-      if (result.id) state.id = String(result.id);
-      renderPanelRows_(body, result.progress || []);
+      renderPanelRows_(body, result.progress || [], { capped: result.capped });
     }).catch(function () {
-      if (!panelOpen || fetchGen !== panelFetchGen) return;
-      if (!sessionMatches_(snap)) return;
+      if (cancelled()) return;
       renderPanelError_(body, "Could not load scores.", function () {
         if (!state.id || !state.token) return;
         loadPanelProgress_(fetchGen, captureSession_());
@@ -1374,7 +1710,8 @@
     progressError: progressError,
     idKey: idKey,
     openProgressPanel: openProgressPanel,
-    closeProgressPanel: closeProgressPanel
+    closeProgressPanel: closeProgressPanel,
+    setPanelRowsProvider: setPanelRowsProvider
   };
 
   if (global.MRJ_AUTH_TEST_MODE) {
@@ -1389,11 +1726,16 @@
       progressBody: progressBody_,
       scoreProgramsForApp: scoreProgramsForApp_,
       filterProgressForApp: filterProgressForApp_,
+      rowPassesItemFilter: rowPassesItemFilter_,
+      panelAppKey: panelAppKey_,
       chipDisabled: chipDisabled_,
       updateStudentChip: updateStudentChip_,
+      adjustChipPosition: adjustChipPosition_,
+      mergeProviderRows: mergeProviderRows_,
       REQUEST_TIMEOUT_MS: REQUEST_TIMEOUT_MS,
       AUTH_VERSION: AUTH_VERSION,
-      APP_SCORE_PROGRAM_MAP: APP_SCORE_PROGRAM_MAP
+      APP_SCORE_PROGRAM_MAP: APP_SCORE_PROGRAM_MAP,
+      DAY2_PACK_ITEM_RE: DAY2_PACK_ITEM_RE
     };
   }
 

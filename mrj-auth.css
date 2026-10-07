@@ -350,6 +350,19 @@ html.mrj-auth-locked body {
   outline-offset: 2px;
 }
 
+.mrj-auth-chip-compact {
+  max-width: 40vw;
+  font-size: 0.85rem;
+  padding: 0.35rem 0.55rem;
+}
+
+.mrj-auth-panel-cap {
+  margin: 0 0 0.65rem;
+  font-size: 0.92rem;
+  line-height: 1.35;
+  opacity: 0.85;
+}
+
 .mrj-auth-panel-root {
   position: fixed;
   inset: 0;
