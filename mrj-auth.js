@@ -7,7 +7,7 @@
 (function (global) {
   "use strict";
 
-  var AUTH_VERSION = "20261007-place";
+  var AUTH_VERSION = "20261007-progress-1.4";
   var ENDPOINT = "https://script.google.com/macros/s/AKfycbwtJTUO3gbcMrlAwsn1feWxyp7Rw2cxpfe1bOT9v2rxmQHa2Tlc6pFNWAjU6ZAdlD6kFQ/exec";
   var SESSION_KEY = "mrj.auth.session";
   var REQUEST_TIMEOUT_MS = 30000;
@@ -115,7 +115,9 @@
 
   var rootEl = null;
   var options = {};
-  var state = { id: "", token: "", progress: [] };
+  var state = { id: "", token: "", progress: [], progressError: "" };
+  var packState = {};
+  var PROGRESS_PAGE_SIZE = 500;
   var viewGen = 0;
   var busy = false;
   var loginFlightSeq = 0;
@@ -219,10 +221,11 @@
         state.token = String(parsed.token);
         saveSession_();
         if (state.id && rootEl) {
-          post_({ action: "progress", id: state.id, token: state.token }).then(function (data) {
-            if (data && data.ok) {
-              if (data.token) state.token = String(data.token);
-              state.progress = Array.isArray(data.progress) ? data.progress : state.progress;
+          fetchAllProgress_(state.id, state.token, appProgram_()).then(function (result) {
+            if (result && result.ok) {
+              if (result.token) state.token = String(result.token);
+              state.progress = result.progress;
+              state.progressError = "";
               saveSession_();
               if (typeof options.onReady === "function") {
                 options.onReady({
@@ -238,16 +241,23 @@
     });
   }
 
+  function appProgram_() {
+    if (options && options.app) return String(options.app).trim();
+    return "";
+  }
+
   function mount(el, opts) {
     installStorageListener_();
     var node = resolveEl_(el);
     if (!node) return;
     rootEl = node;
     options = opts || {};
+    packState = {};
     rootEl.classList.add("mrj-auth");
     viewGen += 1;
     busy = false;
-    state = { id: "", token: "", progress: [] };
+    state = { id: "", token: "", progress: [], progressError: "" };
+    packState = {};
     var saved = readSession_();
     if (!saved) {
       renderDoors_();
@@ -259,20 +269,24 @@
   function resumeSession_(saved) {
     var gen = viewGen;
     renderStatus_(MESSAGES.checking, { resume: true });
-    post_({ action: "progress", id: saved.id, token: saved.token }, {
+    fetchAllProgress_(saved.id, saved.token, appProgram_(), {
       onRetry: function () {
         if (gen !== viewGen) return;
         renderStatus_(MESSAGES.server_busy, { resume: true });
       }
-    }).then(function (data) {
+    }).then(function (result) {
       if (gen !== viewGen) return;
-      if (data && data.ok) {
-        finish_(data.id || saved.id, data.token || saved.token, data.progress);
+      if (result && result.ok) {
+        finish_(result.id || saved.id, result.token || saved.token, result.progress);
         return;
       }
-      if (sessionRejected_(data)) {
+      if (sessionRejected_(result)) {
         clearSession_();
         renderDoors_();
+        return;
+      }
+      if (result && result.error === "progress_load_failed") {
+        renderStatus_("Could not load your saved scores. Try again.", { resume: true });
         return;
       }
       optimisticResume_(saved, gen);
@@ -289,15 +303,16 @@
       note.textContent = MESSAGES.resume_busy;
       rootEl.insertBefore(note, rootEl.firstChild);
     }
-    post_({ action: "progress", id: saved.id, token: saved.token }).then(function (data) {
-      if (sessionRejected_(data)) {
+    fetchAllProgress_(saved.id, saved.token, appProgram_()).then(function (result) {
+      if (sessionRejected_(result)) {
         signOut();
         return;
       }
-      if (!data || !data.ok) return;
-      state.id = data.id || saved.id;
-      state.token = data.token || saved.token;
-      state.progress = Array.isArray(data.progress) ? data.progress : [];
+      if (!result || !result.ok) return;
+      state.id = result.id || saved.id;
+      state.token = result.token || saved.token;
+      state.progress = result.progress;
+      state.progressError = "";
       saveSession_();
       if (gen !== viewGen) return;
       renderSignedIn_();
@@ -323,7 +338,8 @@
     viewGen += 1;
     busy = false;
     activeLoginFlight = null;
-    state = { id: "", token: "", progress: [] };
+    state = { id: "", token: "", progress: [], progressError: "" };
+    packState = {};
     clearSession_();
     if (rootEl) renderDoors_();
   }
@@ -558,15 +574,67 @@
   }
 
 
+  function progressBody_(id, tokenValue, program, offset) {
+    var body = { action: "progress", id: id, token: tokenValue };
+    if (program) body.program = program;
+    if (offset) body.offset = offset;
+    body.limit = PROGRESS_PAGE_SIZE;
+    return body;
+  }
+
+  function fetchAllProgress_(id, tokenValue, program, hook) {
+    var all = [];
+    var offset = 0;
+    var nextId = id;
+    var nextToken = tokenValue;
+    function pullPage() {
+      return post_(progressBody_(id, tokenValue, program, offset), hook).then(function (data) {
+        if (!data || !data.ok) {
+          return {
+            ok: false,
+            error: data && data.error ? data.error : "progress_load_failed",
+            message: data && data.message ? data.message : "",
+            id: data && data.id ? data.id : nextId,
+            token: data && data.token ? data.token : nextToken
+          };
+        }
+        if (data.id) nextId = data.id;
+        if (data.token) nextToken = data.token;
+        var chunk = Array.isArray(data.progress) ? data.progress : [];
+        all = all.concat(chunk);
+        var hasMore = data.hasMore === true;
+        if (!hasMore && data.hasMore !== false && chunk.length >= PROGRESS_PAGE_SIZE) {
+          hasMore = true;
+        }
+        if (hasMore && chunk.length > 0) {
+          offset += chunk.length;
+          return pullPage();
+        }
+        return {
+          ok: true,
+          id: nextId,
+          token: nextToken,
+          progress: all
+        };
+      });
+    }
+    return pullPage();
+  }
+
   function loadPlace_(id, tokenValue) {
     renderStatus_(MESSAGES.loading_place);
-    post_({ action: "progress", id: id, token: tokenValue }).then(function (data) {
-      var rows = data && Array.isArray(data.progress) ? data.progress : [];
-      var nextId = data && data.id ? data.id : id;
-      var nextToken = data && data.token ? data.token : tokenValue;
-      finish_(nextId, nextToken, rows);
+    fetchAllProgress_(id, tokenValue, appProgram_()).then(function (result) {
+      if (result && result.ok) {
+        finish_(result.id || id, result.token || tokenValue, result.progress);
+        return;
+      }
+      if (sessionRejected_(result)) {
+        renderLogin_("Sign in again.", [id, ""]);
+        return;
+      }
+      renderStatus_(result && result.message ? result.message : "Could not load your saved scores. Try again.");
     }).catch(function () {
-      finish_(id, tokenValue, []);
+      renderStatus_("Could not load your saved scores. Try again.");
     });
   }
 
@@ -574,15 +642,100 @@
     state.id = id == null ? "" : String(id);
     state.token = tokenValue == null ? "" : String(tokenValue);
     state.progress = Array.isArray(progress) ? progress : [];
+    state.progressError = "";
     saveSession_();
     renderSignedIn_();
     if (typeof options.onReady === "function") {
       options.onReady({
         id: state.id,
         token: state.token,
-        progress: state.progress
+        progress: state.progress,
+        progressError: state.progressError
       });
     }
+  }
+
+  function packKey_(program) {
+    return String(program || appProgram_() || "decodable").trim() || "decodable";
+  }
+
+  function loadPack(program) {
+    program = packKey_(program);
+    if (!state.id || !state.token) {
+      return Promise.resolve({ ok: false, error: "bad_token" });
+    }
+    packState[program] = { loaded: false, json: "", error: "loading" };
+    return post_({
+      action: "load_pack",
+      id: state.id,
+      token: state.token,
+      program: program
+    }).then(function (data) {
+      if (!data || !data.ok) {
+        packState[program] = {
+          loaded: false,
+          json: "",
+          error: data && data.error ? data.error : "pack_load_failed"
+        };
+        return data || { ok: false, error: "pack_load_failed" };
+      }
+      var json = data.progress_json != null ? String(data.progress_json) : "";
+      packState[program] = { loaded: true, json: json, error: "" };
+      return { ok: true, found: !!data.found, progress_json: json };
+    }).catch(function () {
+      packState[program] = { loaded: false, json: "", error: "network" };
+      return { ok: false, error: "network" };
+    });
+  }
+
+  function savePack(program, progressJson) {
+    program = packKey_(program);
+    if (!state.id || !state.token) {
+      return Promise.resolve({ ok: false, error: "bad_token" });
+    }
+    var ps = packState[program];
+    if (!ps || !ps.loaded) {
+      return Promise.resolve({ ok: false, error: "pack_not_loaded" });
+    }
+    return post_({
+      action: "save_pack",
+      id: state.id,
+      token: state.token,
+      program: program,
+      progress_json: progressJson == null ? "{}" : String(progressJson)
+    }).then(function (data) {
+      if (data && data.ok) {
+        packState[program] = {
+          loaded: true,
+          json: String(progressJson == null ? "{}" : progressJson),
+          error: ""
+        };
+      } else if (ps) {
+        ps.loaded = false;
+        ps.error = data && data.error ? data.error : "save_failed";
+      }
+      return data || { ok: false, error: "save_failed" };
+    }).catch(function () {
+      if (packState[program]) {
+        packState[program].loaded = false;
+        packState[program].error = "network";
+      }
+      return { ok: false, error: "network" };
+    });
+  }
+
+  function packReady(program) {
+    program = packKey_(program);
+    var ps = packState[program];
+    return !!(ps && ps.loaded && !ps.error);
+  }
+
+  function loadProgressForApp(program) {
+    program = packKey_(program);
+    if (!state.id || !state.token) {
+      return Promise.resolve({ ok: false, error: "bad_token", progress: [] });
+    }
+    return fetchAllProgress_(state.id, state.token, program);
   }
 
   function errorText_(data) {
@@ -691,7 +844,12 @@
     student: student,
     token: token,
     signOut: signOut,
-    noteScore: noteScore
+    noteScore: noteScore,
+    app: appProgram_,
+    loadProgressForApp: loadProgressForApp,
+    loadPack: loadPack,
+    savePack: savePack,
+    packReady: packReady
   };
 
   if (global.MRJ_AUTH_TEST_MODE) {
@@ -700,6 +858,8 @@
       postOnce: postOnce_,
       send: send_,
       sessionRejected: sessionRejected_,
+      fetchAllProgress: fetchAllProgress_,
+      progressBody: progressBody_,
       REQUEST_TIMEOUT_MS: REQUEST_TIMEOUT_MS,
       AUTH_VERSION: AUTH_VERSION
     };

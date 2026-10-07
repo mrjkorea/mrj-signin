@@ -71,7 +71,7 @@ function jsonResponse(obj, delayMs) {
 describe("mrj-auth HTTP client", () => {
   it("exposes version marker", () => {
     const { auth } = loadAuth(() => Promise.resolve({ text: () => Promise.resolve("{}") }));
-    assert.equal(auth.AUTH_VERSION, "20261007-place");
+    assert.equal(auth.AUTH_VERSION, "20261007-progress-1.4");
   });
 
   it("waits through a 15s delay then succeeds", async () => {
@@ -152,6 +152,43 @@ describe("mrj-auth HTTP client", () => {
     assert.equal(ready.id, "student1");
     assert.equal(ready.token, "tok");
     assert.equal(storage["mrj.auth.session"], JSON.stringify({ id: "student1", token: "tok" }));
+  });
+
+  it("fetchAllProgress pages until hasMore is false", async () => {
+    let calls = 0;
+    const { auth } = loadAuth(() => {
+      calls += 1;
+      if (calls === 1) {
+        return jsonResponse({
+          ok: true,
+          id: "a",
+          token: "t",
+          progress: [{ program: "p", item: "1" }],
+          hasMore: true,
+          total: 2
+        })();
+      }
+      return jsonResponse({
+        ok: true,
+        id: "a",
+        token: "t",
+        progress: [{ program: "p", item: "2" }],
+        hasMore: false,
+        total: 2
+      })();
+    });
+    const result = await auth._test.fetchAllProgress("a", "t", "my-app");
+    assert.equal(calls, 2);
+    assert.equal(result.ok, true);
+    assert.equal(result.progress.length, 2);
+  });
+
+  it("progressBody includes program when set", () => {
+    const { auth } = loadAuth(() => Promise.resolve({ text: () => Promise.resolve("{}") }));
+    const body = auth._test.progressBody("id", "tok", "word-master", 100);
+    assert.equal(body.program, "word-master");
+    assert.equal(body.offset, 100);
+    assert.equal(body.limit, 500);
   });
 
   it("accepts a slow login response after the client has been waiting", async () => {

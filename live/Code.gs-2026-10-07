@@ -6,21 +6,11 @@
  * Passwords are stored for an exact match and are never returned or logged.
  */
 var SPREADSHEET_ID = "1bpgekxlektvwpsef1PmIkxPiDuHrkVXFaAy-OmwqL5c";
-var APP_VERSION = "1.4.0";
+var APP_VERSION = "1.3.0";
 var ACCOUNTS_SHEET = "StudentAccounts";
 var SCORE_SHEET = "StudentScoreIndex";
 var METRICS_SHEET = "ClassroomMetrics";
-var PACK_SHEET = "AppProgress";
-var PACK_MORE_SHEET = "AppProgressMore";
-var ACCOUNT_CACHE_TTL_SEC = 45;
-var MAX_ACTIVE_TOKENS = 5;
-var PROGRESS_DEFAULT_LIMIT = 500;
-var PROGRESS_MAX_LIMIT = 1000;
-var CHUNK_CHAR_MAX = 40000;
-var MAX_PROGRESS_CHUNKS = 12;
-var BACKFILL_BATCH_ROWS = 800;
-var BACKFILL_PROP = "backfill_score_index_cursor";
-
+var METRICS_TAIL = 4000;
 var ACCOUNT_HEADERS = ["id_display", "id_key", "password", "created_at", "last_login", "token"];
 var SCORE_HEADERS = ["id_key", "program", "item_id", "score_value", "score_max", "score_pct", "local_date", "updated_at"];
 
@@ -31,6 +21,7 @@ var MSG_TAKEN = "That ID is already used. Log in instead.";
 var MSG_TOKEN = "Sign in again.";
 
 function doGet() {
+  try { ensureStampTrigger_(); } catch (ignore) {}
   return json_({ status: "ok", app: "mrj-signin", version: APP_VERSION });
 }
 
@@ -56,7 +47,7 @@ function register_(body) {
   return withLock_(function () {
     var ss = book_();
     var key = idKey_(body.id);
-    var existing = findAccount_(ss, key, true);
+    var existing = findAccount_(ss, key);
     if (existing) {
       return { ok: false, error: "id_taken", message: MSG_TAKEN };
     }
@@ -71,7 +62,6 @@ function register_(body) {
       last_login: now,
       token: token
     });
-    bustAccountCache_(key);
     return {
       ok: true,
       error: "",
@@ -89,7 +79,7 @@ function login_(body) {
   return withLock_(function () {
     var ss = book_();
     var key = idKey_(body.id);
-    var existing = findAccount_(ss, key, true);
+    var existing = findAccount_(ss, key);
     if (!existing) {
       return { ok: false, error: "user_does_not_exist", message: MSG_MISSING };
     }
@@ -98,12 +88,10 @@ function login_(body) {
     }
     var token = newToken_();
     var now = new Date().toISOString();
-    var tokenField = pushToken_(existing.token, token);
     writeAccountCells_(existing.sheet, existing.row, {
       last_login: now,
-      token: tokenField
+      token: token
     });
-    bustAccountCache_(key);
     return {
       ok: true,
       error: "",
@@ -116,52 +104,36 @@ function login_(body) {
 }
 
 function progress_(body) {
-  var gate = requireToken_(book_(), body, false);
+  var gate = withLock_(function () {
+    return requireToken_(book_(), body);
+  });
   if (!gate.ok) return gate;
-  var program = textOrEmpty_(body.program).trim();
-  var offset = parseInt(body.offset, 10);
-  if (!isFinite(offset) || offset < 0) offset = 0;
-  var limit = parseInt(body.limit, 10);
-  if (!isFinite(limit) || limit < 1) limit = PROGRESS_DEFAULT_LIMIT;
-  if (limit > PROGRESS_MAX_LIMIT) limit = PROGRESS_MAX_LIMIT;
-
+  var progress = [];
   try {
-    var all = loadProgressRows_(book_(), gate.id_key, program);
-    var page = pageProgressRows_(all, offset, limit);
-    return {
-      ok: true,
-      error: "",
-      message: "",
-      id: gate.id,
-      token: gate.token,
-      program: program,
-      progress: page.progress,
-      total: page.total,
-      offset: page.offset,
-      limit: page.limit,
-      hasMore: page.hasMore
-    };
-  } catch (err) {
-    return {
-      ok: false,
-      error: "progress_load_failed",
-      message: "Could not load saved progress.",
-      id: gate.id,
-      token: gate.token
-    };
+    stampNamesFor_(book_(), gate.id_key);
+    progress = loadProgress_(book_(), gate.id_key);
+  } catch (ignore) {
+    progress = [];
   }
+  return {
+    ok: true,
+    error: "",
+    message: "",
+    id: gate.id,
+    token: gate.token,
+    progress: progress
+  };
 }
 
 function noteScore_(body) {
   return withLock_(function () {
     var ss = book_();
-    var gate = requireToken_(ss, body, true);
+    var gate = requireToken_(ss, body);
     if (!gate.ok) return gate;
     var now = new Date().toISOString();
-    var program = textOrEmpty_(body.program);
     upsertScore_(ss, {
       id_key: gate.id_key,
-      program: program,
+      program: textOrEmpty_(body.program),
       item_id: textOrEmpty_(body.itemId),
       score_value: body.scoreValue,
       score_max: body.scoreMax,
@@ -169,88 +141,40 @@ function noteScore_(body) {
       local_date: textOrEmpty_(body.localDate),
       updated_at: now
     });
-    var progFilter = program.trim();
-    var rows = loadProgressRows_(ss, gate.id_key, progFilter);
-    var page = pageProgressRows_(rows, 0, PROGRESS_DEFAULT_LIMIT);
     return {
       ok: true,
       error: "",
       message: "",
       id: gate.id,
-      progress: page.progress,
-      total: page.total,
-      hasMore: page.hasMore
+      progress: loadProgress_(ss, gate.id_key)
     };
   });
 }
 
-function requireToken_(ss, body, bustCache) {
+function requireToken_(ss, body) {
   if (isBlankId_(body.id)) {
     return { ok: false, error: "user_does_not_exist", message: MSG_MISSING };
   }
-  var key = idKey_(body.id);
-  var existing = findAccount_(ss, key, !!bustCache);
+  var existing = findAccount_(ss, idKey_(body.id));
   if (!existing) {
     return { ok: false, error: "user_does_not_exist", message: MSG_MISSING };
   }
   var given = body.token == null ? "" : String(body.token);
-  if (!tokenMatches_(existing.token, given)) {
+  if (!existing.token || given !== existing.token) {
     return { ok: false, error: "bad_token", message: MSG_TOKEN };
   }
   return {
     ok: true,
     id: existing.id_display,
     id_key: existing.id_key,
-    token: given
+    token: existing.token
   };
 }
 
-function tokenMatches_(stored, given) {
-  if (!given) return false;
-  var tokens = parseTokens_(stored);
-  if (!tokens.length) return false;
-  for (var i = 0; i < tokens.length; i++) {
-    if (tokens[i] === given) return true;
-  }
-  return false;
-}
-
-function parseTokens_(stored) {
-  var raw = asString_(stored).trim();
-  if (!raw) return [];
-  if (raw.charAt(0) === "[") {
-    try {
-      var parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) {
-        return parsed.map(function (t) { return String(t); }).filter(Boolean);
-      }
-    } catch (ignore) {}
-  }
-  if (raw.indexOf("|") !== -1) {
-    return raw.split("|").map(function (t) { return String(t).trim(); }).filter(Boolean);
-  }
-  return [raw];
-}
-
-function pushToken_(stored, fresh) {
-  var tokens = parseTokens_(stored);
-  tokens = tokens.filter(function (t) { return t !== fresh; });
-  tokens.unshift(fresh);
-  if (tokens.length > MAX_ACTIVE_TOKENS) {
-    tokens = tokens.slice(0, MAX_ACTIVE_TOKENS);
-  }
-  if (tokens.length === 1) return tokens[0];
-  return tokens.join("|");
-}
-
-function loadProgressRows_(ss, idKey, programFilter) {
-  var rows = readScoreIndex_(ss, idKey);
-  if (!programFilter) return rows;
-  var out = [];
-  for (var i = 0; i < rows.length; i++) {
-    if (asString_(rows[i].program).trim() === programFilter) out.push(rows[i]);
-  }
-  return out;
+function loadProgress_(ss, idKey) {
+  var indexed = readScoreIndex_(ss, idKey);
+  if (indexed.length) return indexed;
+  return readMetricsTail_(ss, idKey);
 }
 
 function readScoreIndex_(ss, idKey) {
@@ -273,7 +197,7 @@ function readScoreIndex_(ss, idKey) {
     return a.updated < b.updated ? 1 : -1;
   });
   var out = [];
-  for (var n = 0; n < found.length; n++) {
+  for (var n = 0; n < found.length && n < 20; n++) {
     out.push({
       program: found[n].program,
       item: found[n].item,
@@ -284,32 +208,75 @@ function readScoreIndex_(ss, idKey) {
   return out;
 }
 
-function pageProgressRows_(rows, offset, limit) {
-  var off = Math.max(0, offset | 0);
-  var lim = Math.max(1, Math.min(PROGRESS_MAX_LIMIT, limit | 0));
-  var total = rows.length;
-  var slice = rows.slice(off, off + lim);
+function readMetricsTail_(ss, idKey) {
+  var sheet = ss.getSheetByName(METRICS_SHEET);
+  if (!sheet) return [];
+  var lastRow = sheet.getLastRow();
+  var lastCol = sheet.getLastColumn();
+  if (lastRow < 2 || lastCol < 1) return [];
+  var header = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  var map = {};
+  for (var c = 0; c < header.length; c++) map[String(header[c]).trim()] = c;
+  var start = Math.max(2, lastRow - (METRICS_TAIL - 1));
+  var numRows = lastRow - start + 1;
+  var values = sheet.getRange(start, 1, numRows, lastCol).getValues();
+  var picked = [];
+  for (var i = values.length - 1; i >= 0 && picked.length < 20; i--) {
+    var row = values[i];
+    if (!metricsRowMatches_(row, map, idKey)) continue;
+    var kind = asString_(field_(row, map, "event_kind")).trim().toLowerCase();
+    if (kind === "effort_sample") continue;
+    var scoreValue = field_(row, map, "score_value");
+    var scorePct = field_(row, map, "score_pct");
+    var hasScore = (scoreValue !== "" && scoreValue != null) || (scorePct !== "" && scorePct != null);
+    if (kind !== "learning_result" && !hasScore) continue;
+    picked.push(metricsProgress_(row, map));
+  }
+  return picked;
+}
+
+function metricsRowMatches_(row, map, idKey) {
+  if (!idKey) return false;
+  if (sessionHasKey_(field_(row, map, "session_id"), idKey)) return true;
+  return emailLocalKey_(field_(row, map, "student_email")) === idKey;
+}
+
+function metricsProgress_(row, map) {
+  var program = asString_(field_(row, map, "curriculum_program")).trim();
+  if (!program) program = asString_(field_(row, map, "source")).trim();
+  var date = asString_(field_(row, map, "local_date")).trim();
+  if (!date) date = asString_(field_(row, map, "timestamp")).trim();
   return {
-    progress: slice,
-    total: total,
-    offset: off,
-    limit: lim,
-    hasMore: off + slice.length < total
+    program: program,
+    item: asString_(field_(row, map, "item_id")).trim(),
+    score: formatScore_(field_(row, map, "score_value"), field_(row, map, "score_max"), field_(row, map, "score_pct")),
+    date: date
   };
 }
 
-function findAccount_(ss, key, skipCache) {
-  if (!key) return null;
-  if (!skipCache) {
-    var cached = readAccountCache_(key);
-    if (cached) return hydrateCachedAccount_(ss, cached);
+function sessionHasKey_(sessionId, idKey) {
+  var parts = asString_(sessionId).split("-");
+  for (var i = 0; i < parts.length; i++) {
+    if (idKey_(parts[i]) === idKey) return true;
   }
+  return false;
+}
+
+function emailLocalKey_(email) {
+  var s = asString_(email);
+  var at = s.indexOf("@");
+  if (at < 1) return "";
+  return idKey_(s.slice(0, at));
+}
+
+function findAccount_(ss, key) {
+  if (!key) return null;
   var sheet = ensureAccounts_(ss);
   if (sheet.getLastRow() < 2) return null;
   var values = sheet.getDataRange().getValues();
   for (var i = 1; i < values.length; i++) {
     if (asString_(values[i][1]) !== key) continue;
-    var row = {
+    return {
       sheet: sheet,
       row: i + 1,
       id_display: asString_(values[i][0]),
@@ -317,55 +284,8 @@ function findAccount_(ss, key, skipCache) {
       password: asString_(values[i][2]),
       token: asString_(values[i][5])
     };
-    writeAccountCache_(key, row);
-    return row;
   }
   return null;
-}
-
-function hydrateCachedAccount_(ss, cached) {
-  var sheet = ensureAccounts_(ss);
-  return {
-    sheet: sheet,
-    row: cached.row,
-    id_display: cached.id_display,
-    id_key: cached.id_key,
-    password: cached.password,
-    token: cached.token
-  };
-}
-
-function accountCacheKey_(key) {
-  return "acct:" + key;
-}
-
-function readAccountCache_(key) {
-  try {
-    var raw = CacheService.getScriptCache().get(accountCacheKey_(key));
-    if (!raw) return null;
-    return JSON.parse(raw);
-  } catch (ignore) {
-    return null;
-  }
-}
-
-function writeAccountCache_(key, row) {
-  try {
-    var payload = {
-      row: row.row,
-      id_display: row.id_display,
-      id_key: row.id_key,
-      password: row.password,
-      token: row.token
-    };
-    CacheService.getScriptCache().put(accountCacheKey_(key), JSON.stringify(payload), ACCOUNT_CACHE_TTL_SEC);
-  } catch (ignore) {}
-}
-
-function bustAccountCache_(key) {
-  try {
-    CacheService.getScriptCache().remove(accountCacheKey_(key));
-  } catch (ignore) {}
 }
 
 function appendAccount_(ss, rec) {
@@ -549,157 +469,20 @@ function parseBody_(e) {
 }
 
 function loadPack_(body) {
-  var gate = requireToken_(book_(), body, false);
-  if (!gate.ok) return gate;
-  var program = textOrEmpty_(body.program) || "decodable";
-  try {
-    var json = readPackJson_(book_(), gate.id_key, program);
-    return { ok: true, found: json !== "", progress_json: json };
-  } catch (err) {
-    return { ok: false, error: "pack_load_failed", message: "Could not load progress pack." };
-  }
-}
-
-function savePack_(body) {
   return withLock_(function () {
     var ss = book_();
-    var gate = requireToken_(ss, body, true);
+    var gate = requireToken_(ss, body);
     if (!gate.ok) return gate;
     var program = textOrEmpty_(body.program) || "decodable";
-    var incoming = String(body.progress_json || "{}");
-    var stored = readPackJson_(ss, gate.id_key, program);
-    var merged = mergeProgressJson_(stored, incoming, program);
-    var split = splitProgressChunks_(merged);
-    if (split.error) {
-      return {
-        ok: false,
-        error: "too_large",
-        message: "Progress data is too large to store.",
-        maxChars: CHUNK_CHAR_MAX * MAX_PROGRESS_CHUNKS
-      };
+    var sheet = packSheet_(ss);
+    var values = sheet.getDataRange().getValues();
+    for (var i = 1; i < values.length; i++) {
+      if (String(values[i][0]) === gate.id_key && String(values[i][1]) === program) {
+        return { ok: true, found: true, progress_json: String(values[i][2] || "") };
+      }
     }
-    writePackChunks_(ss, gate.id_key, program, split.chunks);
-    return { ok: true, saved: true };
+    return { ok: true, found: false, progress_json: "" };
   });
-}
-
-function splitProgressChunks_(text) {
-  var s = String(text == null ? "" : text);
-  if (!s) return { chunks: [""] };
-  var chunks = [];
-  for (var i = 0; i < s.length; i += CHUNK_CHAR_MAX) {
-    chunks.push(s.substring(i, i + CHUNK_CHAR_MAX));
-  }
-  if (chunks.length > MAX_PROGRESS_CHUNKS) {
-    return { error: "too_large" };
-  }
-  return { chunks: chunks };
-}
-
-function joinProgressChunks_(chunks) {
-  if (!chunks || !chunks.length) return "";
-  return chunks.map(function (c) { return String(c == null ? "" : c); }).join("");
-}
-
-function packSheet_(ss) {
-  var sheet = ss.getSheetByName(PACK_SHEET);
-  if (!sheet) {
-    sheet = ss.insertSheet(PACK_SHEET);
-    sheet.getRange(1, 1, 1, 5).setValues([["id_key", "program", "progress_json", "chunk_count", "updated_at"]]);
-    sheet.setFrozenRows(1);
-    return sheet;
-  }
-  var h3 = asString_(sheet.getRange(1, 4).getValue()).trim();
-  if (h3 === "updated_at") {
-    sheet.getRange(1, 4).setValue("chunk_count");
-    sheet.getRange(1, 5).setValue("updated_at");
-  }
-  return sheet;
-}
-
-function packMoreSheet_(ss) {
-  var sheet = ss.getSheetByName(PACK_MORE_SHEET);
-  if (!sheet) {
-    sheet = ss.insertSheet(PACK_MORE_SHEET);
-    sheet.getRange(1, 1, 1, 4).setValues([["id_key", "program", "part", "chunk"]]);
-    sheet.setFrozenRows(1);
-  }
-  return sheet;
-}
-
-function readPackJson_(ss, idKey, program) {
-  var sheet = packSheet_(ss);
-  if (sheet.getLastRow() < 2) return "";
-  var values = sheet.getDataRange().getValues();
-  var header = values[0];
-  var legacy = asString_(header[3]).trim() === "updated_at";
-  for (var i = 1; i < values.length; i++) {
-    if (asString_(values[i][0]) !== idKey) continue;
-    if (asString_(values[i][1]) !== program) continue;
-    var chunk0 = asString_(values[i][2]);
-    if (legacy) return chunk0;
-    var count = parseInt(values[i][3], 10);
-    if (!isFinite(count) || count <= 1) return chunk0;
-    var more = readPackMoreChunks_(ss, idKey, program, count);
-    return joinProgressChunks_([chunk0].concat(more));
-  }
-  return "";
-}
-
-function readPackMoreChunks_(ss, idKey, program, count) {
-  var sheet = packMoreSheet_(ss);
-  if (sheet.getLastRow() < 2) return [];
-  var values = sheet.getDataRange().getValues();
-  var parts = {};
-  for (var i = 1; i < values.length; i++) {
-    if (asString_(values[i][0]) !== idKey) continue;
-    if (asString_(values[i][1]) !== program) continue;
-    var part = parseInt(values[i][2], 10);
-    if (!isFinite(part) || part < 1) continue;
-    parts[part] = asString_(values[i][3]);
-  }
-  var out = [];
-  for (var p = 1; p < count; p++) {
-    out.push(parts[p] != null ? parts[p] : "");
-  }
-  return out;
-}
-
-function writePackChunks_(ss, idKey, program, chunks) {
-  var sheet = packSheet_(ss);
-  var more = packMoreSheet_(ss);
-  deletePackRows_(sheet, more, idKey, program);
-  var now = new Date().toISOString();
-  var count = chunks.length;
-  var row = [textCell_(idKey), textCell_(program), textCell_(chunks[0] || ""), textCell_(count), textCell_(now)];
-  var range = sheet.getRange(Math.max(sheet.getLastRow(), 1) + 1, 1, 1, row.length);
-  range.setNumberFormat("@");
-  range.setValues([row]);
-  if (count > 1) {
-    var moreRows = [];
-    for (var p = 1; p < count; p++) {
-      moreRows.push([textCell_(idKey), textCell_(program), textCell_(p), textCell_(chunks[p])]);
-    }
-    var mStart = Math.max(more.getLastRow(), 1) + 1;
-    var mRange = more.getRange(mStart, 1, moreRows.length, 4);
-    mRange.setNumberFormat("@");
-    mRange.setValues(moreRows);
-  }
-}
-
-function deletePackRows_(sheet, moreSheet, idKey, program) {
-  var values = sheet.getLastRow() >= 2 ? sheet.getDataRange().getValues() : [];
-  for (var i = values.length - 1; i >= 1; i--) {
-    if (asString_(values[i][0]) === idKey && asString_(values[i][1]) === program) {
-      sheet.deleteRow(i + 1);
-    }
-  }
-  var moreValues = moreSheet.getLastRow() >= 2 ? moreSheet.getDataRange().getValues() : [];
-  for (var j = moreValues.length - 1; j >= 1; j--) {
-    if (asString_(moreValues[j][0]) === idKey && asString_(moreValues[j][1]) === program) {
-      moreSheet.deleteRow(j + 1);
-    }
-  }
 }
 
 function toNum_(n) {
@@ -826,18 +609,46 @@ function parseProgress_(raw) {
   }
 }
 
-function mergeProgressJson_(storedRaw, incomingRaw, program) {
-  var incomingStr = String(incomingRaw == null ? "{}" : incomingRaw);
-  var programKey = String(program || "").trim().toLowerCase();
-  var incoming = parseProgress_(incomingStr);
-  var useDecodable = programKey === "decodable" || incoming != null;
-  if (!useDecodable) return incomingStr;
-  if (!incoming) return incomingStr;
+function mergeProgressJson_(storedRaw, incomingRaw) {
   var stored = parseProgress_(storedRaw);
-  if (!stored) return incomingStr;
+  var incoming = parseProgress_(incomingRaw);
+  if (!incoming) return String(storedRaw || "{}");
+  if (!stored) return String(incomingRaw || "{}");
   var books = mergeBookBag_(stored.books, incoming.books);
   var rev = Math.max(toNum_(stored.rev), toNum_(incoming.rev));
   return JSON.stringify({ v: 2, rev: rev, books: books });
+}
+
+function savePack_(body) {
+  return withLock_(function () {
+    var ss = book_();
+    var gate = requireToken_(ss, body);
+    if (!gate.ok) return gate;
+    var program = textOrEmpty_(body.program) || "decodable";
+    var incoming = String(body.progress_json || "{}");
+    var sheet = packSheet_(ss);
+    var values = sheet.getDataRange().getValues();
+    var now = new Date().toISOString();
+    for (var i = 1; i < values.length; i++) {
+      if (String(values[i][0]) === gate.id_key && String(values[i][1]) === program) {
+        var progress = mergeProgressJson_(String(values[i][2] || ""), incoming).substring(0, 45000);
+        sheet.getRange(i + 1, 3, 1, 2).setValues([[progress, now]]);
+        return { ok: true, saved: true };
+      }
+    }
+    sheet.appendRow([gate.id_key, program, incoming.substring(0, 45000), now]);
+    return { ok: true, saved: true };
+  });
+}
+
+function packSheet_(ss) {
+  var sheet = ss.getSheetByName("AppProgress");
+  if (!sheet) {
+    sheet = ss.insertSheet("AppProgress");
+    sheet.getRange(1, 1, 1, 4).setValues([["id_key", "program", "progress_json", "updated_at"]]);
+    sheet.setFrozenRows(1);
+  }
+  return sheet;
 }
 
 function json_(obj) {
@@ -850,113 +661,15 @@ function json_(obj) {
     .setMimeType(ContentService.MimeType.JSON);
 }
 
-/**
- * Owner-run: rebuild StudentScoreIndex from ClassroomMetrics history.
- * Run from the Apps Script editor (Run > backfillStudentScoreIndex).
- * Safe to re-run; resumes via Script Properties cursor. Clears cursor when done.
- */
-function backfillStudentScoreIndex() {
-  var lock = LockService.getScriptLock();
-  if (!lock.tryLock(1000)) {
-    return { ok: false, error: "busy", message: "Backfill already running." };
+
+function ensureStampTrigger_() {
+  var triggers = ScriptApp.getProjectTriggers();
+  for (var i = 0; i < triggers.length; i++) {
+    if (triggers[i].getHandlerFunction() === "stampRecentNames") return;
   }
-  try {
-    return backfillStudentScoreIndexChunk_();
-  } finally {
-    lock.releaseLock();
-  }
+  ScriptApp.newTrigger("stampRecentNames").timeBased().everyMinutes(10).create();
 }
 
-function backfillStudentScoreIndexChunk_() {
-  var props = PropertiesService.getScriptProperties();
-  var ss = book_();
-  var metrics = ss.getSheetByName(METRICS_SHEET);
-  if (!metrics) return { ok: false, error: "no_metrics" };
-  var lastRow = metrics.getLastRow();
-  if (lastRow < 2) {
-    props.deleteProperty(BACKFILL_PROP);
-    return { ok: true, done: true, message: "No metrics rows." };
-  }
-  var lastCol = metrics.getLastColumn();
-  var header = metrics.getRange(1, 1, 1, lastCol).getValues()[0];
-  var map = {};
-  for (var c = 0; c < header.length; c++) map[String(header[c]).trim()] = c;
-
-  var cursor = parseInt(props.getProperty(BACKFILL_PROP), 10);
-  if (!isFinite(cursor) || cursor < 2) cursor = 2;
-  var end = Math.min(lastRow, cursor + BACKFILL_BATCH_ROWS - 1);
-  if (cursor > lastRow) {
-    props.deleteProperty(BACKFILL_PROP);
-    return { ok: true, done: true, message: "Backfill complete." };
-  }
-
-  var numRows = end - cursor + 1;
-  var values = metrics.getRange(cursor, 1, numRows, lastCol).getValues();
-  var upserts = 0;
-  for (var i = 0; i < values.length; i++) {
-    var rec = scoreFromMetricsRow_(values[i], map);
-    if (!rec) continue;
-    upsertScore_(ss, rec);
-    upserts++;
-  }
-
-  if (end >= lastRow) {
-    props.deleteProperty(BACKFILL_PROP);
-    return { ok: true, done: true, processed: numRows, upserts: upserts };
-  }
-  props.setProperty(BACKFILL_PROP, String(end + 1));
-  return { ok: true, done: false, nextRow: end + 1, processed: numRows, upserts: upserts };
-}
-
-function scoreFromMetricsRow_(row, map) {
-  var kind = asString_(field_(row, map, "event_kind")).trim().toLowerCase();
-  if (kind === "effort_sample") return null;
-  var scoreValue = field_(row, map, "score_value");
-  var scorePct = field_(row, map, "score_pct");
-  var hasScore = (scoreValue !== "" && scoreValue != null) || (scorePct !== "" && scorePct != null);
-  if (kind !== "learning_result" && !hasScore) return null;
-
-  var idKey = "";
-  var session = asString_(field_(row, map, "session_id"));
-  var parts = session.split("-");
-  for (var p = 0; p < parts.length; p++) {
-    var k = idKey_(parts[p]);
-    if (k && k !== "unknown" && k !== "anon" && k !== "mrj") {
-      idKey = k;
-      break;
-    }
-  }
-  if (!idKey) {
-    var email = asString_(field_(row, map, "student_email"));
-    var at = email.indexOf("@");
-    if (at > 0) idKey = idKey_(email.slice(0, at));
-  }
-  if (!idKey) return null;
-
-  var program = asString_(field_(row, map, "curriculum_program")).trim();
-  if (!program) program = asString_(field_(row, map, "source")).trim();
-  var item = asString_(field_(row, map, "item_id")).trim();
-  if (!program || !item) return null;
-
-  var updated = asString_(field_(row, map, "timestamp")).trim();
-  if (!updated) updated = new Date().toISOString();
-
-  return {
-    id_key: idKey,
-    program: program,
-    item_id: item,
-    score_value: scoreValue,
-    score_max: field_(row, map, "score_max"),
-    score_pct: scorePct,
-    local_date: asString_(field_(row, map, "local_date")).trim(),
-    updated_at: updated
-  };
-}
-
-/**
- * Time-based trigger handler (install manually: Triggers > Add > stampRecentNames, every 10 minutes).
- * Requires spreadsheets scope only; does not run on student sign-in.
- */
 function stampRecentNames() {
   stampNamesFor_(book_(), "");
 }
