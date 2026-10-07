@@ -6,7 +6,7 @@
  * Passwords are stored for an exact match and are never returned or logged.
  */
 var SPREADSHEET_ID = "1bpgekxlektvwpsef1PmIkxPiDuHrkVXFaAy-OmwqL5c";
-var APP_VERSION = "1.4.1";
+var APP_VERSION = "1.4.0";
 var ACCOUNTS_SHEET = "StudentAccounts";
 var SCORE_SHEET = "StudentScoreIndex";
 var METRICS_SHEET = "ClassroomMetrics";
@@ -17,9 +17,7 @@ var MAX_ACTIVE_TOKENS = 5;
 var PROGRESS_DEFAULT_LIMIT = 500;
 var PROGRESS_MAX_LIMIT = 1000;
 var CHUNK_CHAR_MAX = 40000;
-var MAX_PROGRESS_TOTAL_CHARS = 2000000;
-var MAX_PROGRESS_CHUNKS = 51; // 2,000,000 / 40,000 = 50, +1 because a chunk never ends on a high surrogate
-var PACK_WRITE_BATCH_ROWS = 10; // <= ~400k chars per setValues call
+var MAX_PROGRESS_CHUNKS = 12;
 var METRICS_FALLBACK_TAIL = 12000;
 var BACKFILL_PROP = "backfill_score_index_cursor";
 var BACKFILL_TIME_BUDGET_MS = 270000;
@@ -598,17 +596,6 @@ function textCell_(value) {
   return s;
 }
 
-/**
- * Pack chunk cells only (AppProgress col 3, AppProgressMore col 4; General format).
- * Sheets treats a leading ' as a text marker and drops it, so a chunk that starts with '
- * is written as '' + rest. Reads need no change: getValue() already returns the text without the marker.
- */
-function packChunkCell_(value) {
-  var s = String(value == null ? "" : value);
-  if (/^[=+\-@']/.test(s)) return "'" + s;
-  return s;
-}
-
 function scoreCell_(value) {
   if (value == null || value === "") return "";
   return textCell_(value);
@@ -662,13 +649,7 @@ function savePack_(body) {
     if (!gate.ok) return gate;
     var program = textOrEmpty_(body.program) || "decodable";
     var incoming = String(body.progress_json || "{}");
-    var mainSheet = packSheet_(ss);
-    var mainRowNum = findPackMainRow_(mainSheet, gate.id_key, program);
-    var chunk0 = mainRowNum ? asString_(mainSheet.getRange(mainRowNum, 3).getValue()) : "";
-    var moreSheet = ss.getSheetByName(PACK_MORE_SHEET);
-    var moreValues = readPackMoreValues_(moreSheet);
-    var moreParsed = parsePackMoreFromValues_(moreValues, gate.id_key, program);
-    var stored = packJsonFromMainAndMore_(chunk0, moreParsed);
+    var stored = readPackJson_(ss, gate.id_key, program);
     var merged = mergeProgressJson_(stored, incoming, program);
     var split = splitProgressChunks_(merged);
     if (split.error) {
@@ -676,10 +657,10 @@ function savePack_(body) {
         ok: false,
         error: "too_large",
         message: "Progress data is too large to store.",
-        maxChars: MAX_PROGRESS_TOTAL_CHARS
+        maxChars: CHUNK_CHAR_MAX * MAX_PROGRESS_CHUNKS
       };
     }
-    writePackChunks_(ss, gate.id_key, program, split.chunks, moreValues);
+    writePackChunks_(ss, gate.id_key, program, split.chunks);
     return { ok: true, saved: true };
   });
 }
@@ -687,19 +668,13 @@ function savePack_(body) {
 function splitProgressChunks_(text) {
   var s = String(text == null ? "" : text);
   if (!s) return { chunks: [""] };
-  if (s.length > MAX_PROGRESS_TOTAL_CHARS) return { error: "too_large" };
   var chunks = [];
-  var i = 0;
-  while (i < s.length) {
-    var end = Math.min(i + CHUNK_CHAR_MAX, s.length);
-    if (end < s.length) {
-      var code = s.charCodeAt(end - 1);
-      if (code >= 0xD800 && code <= 0xDBFF) end -= 1;
-    }
-    chunks.push(s.substring(i, end));
-    i = end;
+  for (var i = 0; i < s.length; i += CHUNK_CHAR_MAX) {
+    chunks.push(s.substring(i, i + CHUNK_CHAR_MAX));
   }
-  if (chunks.length > MAX_PROGRESS_CHUNKS) return { error: "too_large" };
+  if (chunks.length > MAX_PROGRESS_CHUNKS) {
+    return { error: "too_large" };
+  }
   return { chunks: chunks };
 }
 
@@ -722,12 +697,19 @@ function packMoreSheet_(ss, createIfMissing) {
   var sheet = ss.getSheetByName(PACK_MORE_SHEET);
   if (sheet) return sheet;
   if (!createIfMissing) return null;
-  // Only called from save_pack, which already holds the script lock. Do not take/release the
-  // lock again here: releaseLock() would drop the caller's lock in the middle of the save.
-  sheet = ss.insertSheet(PACK_MORE_SHEET);
-  sheet.getRange(1, 1, 1, 4).setValues([["id_key", "program", "part", "chunk"]]);
-  sheet.setFrozenRows(1);
-  return sheet;
+  var lock = LockService.getScriptLock();
+  lock.waitLock(FLUSH_LOCK_MS);
+  try {
+    sheet = ss.getSheetByName(PACK_MORE_SHEET);
+    if (!sheet) {
+      sheet = ss.insertSheet(PACK_MORE_SHEET);
+      sheet.getRange(1, 1, 1, 4).setValues([["id_key", "program", "part", "chunk"]]);
+      sheet.setFrozenRows(1);
+    }
+    return sheet;
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 function findPackMainRow_(sheet, idKey, program) {
@@ -741,40 +723,18 @@ function findPackMainRow_(sheet, idKey, program) {
   return 0;
 }
 
-function parsePackMoreFromValues_(values, idKey, program) {
-  var total = 1;
-  var parts = {};
-  var rowByPart = {};
-  if (!values || values.length < 2) return { total: total, parts: parts, rowByPart: rowByPart };
+function readPackChunkTotal_(ss, idKey, program) {
+  var sheet = ss.getSheetByName(PACK_MORE_SHEET);
+  if (!sheet || sheet.getLastRow() < 2) return 1;
+  var values = sheet.getDataRange().getValues();
   for (var i = 1; i < values.length; i++) {
     if (asString_(values[i][0]) !== idKey) continue;
     if (asString_(values[i][1]) !== program) continue;
-    var part = parseInt(values[i][2], 10);
-    if (!isFinite(part)) continue;
-    rowByPart[part] = i + 1;
-    if (part === 0) {
-      var n = parseInt(values[i][3], 10);
-      if (isFinite(n) && n >= 1) total = n;
-    } else if (part >= 1) {
-      parts[part] = asString_(values[i][3]);
-    }
+    if (parseInt(values[i][2], 10) !== 0) continue;
+    var n = parseInt(values[i][3], 10);
+    if (isFinite(n) && n >= 1) return n;
   }
-  return { total: total, parts: parts, rowByPart: rowByPart };
-}
-
-function readPackMoreValues_(moreSheet) {
-  if (!moreSheet || moreSheet.getLastRow() < 1) return [];
-  return moreSheet.getDataRange().getValues();
-}
-
-function packJsonFromMainAndMore_(chunk0, moreParsed) {
-  var total = moreParsed.total;
-  if (total <= 1) return chunk0;
-  var more = [];
-  for (var p = 1; p < total; p++) {
-    more.push(moreParsed.parts[p] != null ? moreParsed.parts[p] : "");
-  }
-  return joinProgressChunks_([chunk0].concat(more));
+  return 1;
 }
 
 function readPackJson_(ss, idKey, program) {
@@ -783,117 +743,89 @@ function readPackJson_(ss, idKey, program) {
   var rowNum = findPackMainRow_(sheet, idKey, program);
   if (!rowNum) return "";
   var chunk0 = asString_(sheet.getRange(rowNum, 3).getValue());
-  var moreSheet = ss.getSheetByName(PACK_MORE_SHEET);
-  var moreValues = readPackMoreValues_(moreSheet);
-  var moreParsed = parsePackMoreFromValues_(moreValues, idKey, program);
-  return packJsonFromMainAndMore_(chunk0, moreParsed);
+  var total = readPackChunkTotal_(ss, idKey, program);
+  if (total <= 1) return chunk0;
+  var more = readPackMoreChunks_(ss, idKey, program, total);
+  return joinProgressChunks_([chunk0].concat(more));
 }
 
-function packMoreRow_(idKey, program, part, chunk) {
-  return [textCell_(idKey), textCell_(program), textCell_(part), packChunkCell_(chunk)];
+function readPackMoreChunks_(ss, idKey, program, total) {
+  var sheet = ss.getSheetByName(PACK_MORE_SHEET);
+  if (!sheet || sheet.getLastRow() < 2) return [];
+  var values = sheet.getDataRange().getValues();
+  var parts = {};
+  for (var i = 1; i < values.length; i++) {
+    if (asString_(values[i][0]) !== idKey) continue;
+    if (asString_(values[i][1]) !== program) continue;
+    var part = parseInt(values[i][2], 10);
+    if (!isFinite(part) || part < 1) continue;
+    parts[part] = asString_(values[i][3]);
+  }
+  var out = [];
+  for (var p = 1; p < total; p++) {
+    out.push(parts[p] != null ? parts[p] : "");
+  }
+  return out;
 }
 
-function deletePackMoreRowsForStudent_(moreSheet, values, idKey, program, keepPartsUpTo) {
-  if (!moreSheet || !values || values.length < 2) return;
-  var runs = [];
-  var total = 0;
+function upsertPackMorePart_(moreSheet, idKey, program, part, chunk) {
+  var values = moreSheet.getLastRow() >= 1 ? moreSheet.getDataRange().getValues() : [];
+  var rowNum = 0;
+  for (var i = 1; i < values.length; i++) {
+    if (asString_(values[i][0]) !== idKey) continue;
+    if (asString_(values[i][1]) !== program) continue;
+    if (parseInt(values[i][2], 10) !== part) continue;
+    rowNum = i + 1;
+    break;
+  }
+  var row = [textCell_(idKey), textCell_(program), textCell_(part), textCell_(chunk)];
+  if (rowNum) {
+    moreSheet.getRange(rowNum, 1, 1, 4).setValues([row]);
+  } else {
+    moreSheet.appendRow(row);
+  }
+}
+
+function deletePackMorePartsAbove_(moreSheet, idKey, program, maxPart) {
+  if (moreSheet.getLastRow() < 2) return;
+  var values = moreSheet.getDataRange().getValues();
   for (var i = values.length - 1; i >= 1; i--) {
     if (asString_(values[i][0]) !== idKey) continue;
     if (asString_(values[i][1]) !== program) continue;
     var part = parseInt(values[i][2], 10);
     if (!isFinite(part)) continue;
-    if (keepPartsUpTo != null && part <= keepPartsUpTo) continue;
-    var rowNum = i + 1;
-    var last = runs.length ? runs[runs.length - 1] : null;
-    if (last && last.start === rowNum + 1) {
-      last.start = rowNum;
-      last.count++;
-    } else {
-      runs.push({ start: rowNum, count: 1 });
-    }
-    total++;
-  }
-  if (!runs.length) return;
-  var maxRows = moreSheet.getMaxRows();
-  if (maxRows - total <= moreSheet.getFrozenRows()) moreSheet.insertRowsAfter(maxRows, 1);
-  for (var r = 0; r < runs.length; r++) moreSheet.deleteRows(runs[r].start, runs[r].count);
-}
-
-function writePackMoreRowBatches_(moreSheet, startRow, rows) {
-  for (var a = 0; a < rows.length; a += PACK_WRITE_BATCH_ROWS) {
-    var slice = rows.slice(a, a + PACK_WRITE_BATCH_ROWS);
-    moreSheet.getRange(startRow + a, 1, slice.length, 4).setValues(slice);
+    if (part === 0) continue;
+    if (part > maxPart) moreSheet.deleteRow(i + 1);
   }
 }
 
-function writePackMoreChunks_(moreSheet, moreValues, idKey, program, chunks) {
-  var count = chunks.length;
-  var parsed = parsePackMoreFromValues_(moreValues, idKey, program);
-  var rowByPart = parsed.rowByPart;
-  var updates = [];
-  var appends = [];
-  for (var p = 1; p < count; p++) {
-    var row = packMoreRow_(idKey, program, p, chunks[p]);
-    var rowNum = rowByPart[p];
-    if (rowNum) {
-      updates.push({ row: rowNum, data: row });
-    } else {
-      appends.push(row);
-    }
+function deleteAllPackMore_(moreSheet, idKey, program) {
+  if (moreSheet.getLastRow() < 2) return;
+  var values = moreSheet.getDataRange().getValues();
+  for (var i = values.length - 1; i >= 1; i--) {
+    if (asString_(values[i][0]) !== idKey) continue;
+    if (asString_(values[i][1]) !== program) continue;
+    moreSheet.deleteRow(i + 1);
   }
-  var metaRow = packMoreRow_(idKey, program, 0, String(count));
-  var metaRowNum = rowByPart[0];
-  if (metaRowNum) {
-    updates.push({ row: metaRowNum, data: metaRow });
-  } else {
-    appends.push(metaRow);
-  }
-  if (appends.length) {
-    var startRow = Math.max(moreSheet.getLastRow(), 1) + 1;
-    var needLast = startRow + appends.length - 1;
-    var maxRows = moreSheet.getMaxRows();
-    if (needLast > maxRows) moreSheet.insertRowsAfter(maxRows, needLast - maxRows);
-    writePackMoreRowBatches_(moreSheet, startRow, appends);
-  }
-  updates.sort(function (a, b) { return a.row - b.row; });
-  var batchStart = -1;
-  var batchRows = [];
-  for (var u = 0; u < updates.length; u++) {
-    var item = updates[u];
-    if (batchStart < 0) {
-      batchStart = item.row;
-      batchRows = [item.data];
-    } else if (item.row === batchStart + batchRows.length && batchRows.length < PACK_WRITE_BATCH_ROWS) {
-      batchRows.push(item.data);
-    } else {
-      moreSheet.getRange(batchStart, 1, batchRows.length, 4).setValues(batchRows);
-      batchStart = item.row;
-      batchRows = [item.data];
-    }
-  }
-  if (batchStart >= 0 && batchRows.length) {
-    moreSheet.getRange(batchStart, 1, batchRows.length, 4).setValues(batchRows);
-  }
-  deletePackMoreRowsForStudent_(moreSheet, moreValues, idKey, program, count - 1);
 }
 
-function writePackChunks_(ss, idKey, program, chunks, moreValuesCached) {
+function writePackChunks_(ss, idKey, program, chunks) {
   var sheet = packSheet_(ss);
   var now = new Date().toISOString();
   var count = chunks.length;
   var rowNum = findPackMainRow_(sheet, idKey, program);
   if (count > 1) {
     var more = packMoreSheet_(ss, true);
-    var moreValues = moreValuesCached != null ? moreValuesCached : readPackMoreValues_(more);
-    writePackMoreChunks_(more, moreValues, idKey, program, chunks);
+    for (var p = 1; p < count; p++) {
+      upsertPackMorePart_(more, idKey, program, p, chunks[p]);
+    }
+    upsertPackMorePart_(more, idKey, program, 0, String(count));
+    deletePackMorePartsAbove_(more, idKey, program, count - 1);
   } else {
     var moreSheet = ss.getSheetByName(PACK_MORE_SHEET);
-    if (moreSheet) {
-      var values = moreValuesCached != null ? moreValuesCached : readPackMoreValues_(moreSheet);
-      deletePackMoreRowsForStudent_(moreSheet, values, idKey, program, null);
-    }
+    if (moreSheet) deleteAllPackMore_(moreSheet, idKey, program);
   }
-  var mainRow = [textCell_(idKey), textCell_(program), packChunkCell_(chunks[0] || ""), textCell_(now)];
+  var mainRow = [textCell_(idKey), textCell_(program), textCell_(chunks[0] || ""), textCell_(now)];
   if (rowNum) {
     sheet.getRange(rowNum, 1, 1, 4).setValues([mainRow]);
   } else {
