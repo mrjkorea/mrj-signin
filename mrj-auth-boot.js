@@ -82,7 +82,8 @@
       bubbles: true,
       detail: {
         id: id,
-        progress: info.progress != null ? info.progress : []
+        progress: info.progress != null ? info.progress : [],
+        progressError: info.progressError != null ? info.progressError : ""
       }
     }));
     setTimeout(function () { lockBuiltNameCards(id); }, 400);
