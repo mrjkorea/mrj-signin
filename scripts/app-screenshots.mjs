@@ -12,7 +12,12 @@ const root = path.join(__dirname, "..");
 const outDir = path.join(root, "screenshots");
 
 const APPS = [
-  { slug: "word-master", url: "https://mrjkorea.github.io/word-master/", programs: ["word-master"] },
+  {
+    slug: "word-master",
+    url: "https://mrjkorea.github.io/word-master/",
+    programs: ["word-master"],
+    expectChip: false
+  },
   { slug: "day2-words", url: "https://mrjkorea.github.io/day2-words/", programs: ["day2-words", "word-master"] },
   { slug: "day3-workbook", url: "https://mrjkorea.github.io/day3-workbook/", programs: ["day3-workbook", "conversation"] },
   { slug: "day4-speak", url: "https://mrjkorea.github.io/day4-speak/", programs: ["day4-speak"] },
@@ -63,7 +68,7 @@ async function chipCollision(page) {
     if (!chip || chip.hidden) return "no chip";
     const cr = chip.getBoundingClientRect();
     const selectors =
-      "button, a, select, input, textarea, [role='button'], [onclick], .pill, [class*='pill'], [class*='badge']";
+      "button, a, select, input, textarea, [role='button'], [onclick], .pill, [class*='pill'], [class*='badge'], h1, h2, h3, h4, h5, h6, p, legend, [class*='title'], [class*='heading'], [class*='subtitle'], [class*='hero'], [class*='greeting'], [class*='points']";
     const nodes = document.querySelectorAll(selectors);
     for (let i = 0; i < nodes.length; i++) {
       const el = nodes[i];
@@ -139,12 +144,26 @@ async function runApp(browser, app, vp) {
   let panelStatus = "error";
   try {
     await page.goto(app.url, { waitUntil: "domcontentloaded", timeout: 60000 });
+    await page.waitForFunction(
+      () => globalThis.MRJ_AUTH && typeof MRJ_AUTH.student === "function" && MRJ_AUTH.student(),
+      { timeout: 45000 }
+    );
     await page.waitForTimeout(4500);
+    const expectChip = app.expectChip !== false;
     if (app.slug === "MRJ-Zap-Grammar-Books") {
       await page.waitForTimeout(1000);
       chipStatus = await zapCheck(page);
       await page.screenshot({ path: path.join(outDir, `${app.slug}-${vp.name}-chip.png`) });
       await page.locator(".student-pill").click();
+    } else if (!expectChip) {
+      chipStatus = await chipCollision(page);
+      await page.screenshot({ path: path.join(outDir, `${app.slug}-${vp.name}-chip.png`) });
+      const pill = page.locator(".student-pill, [data-mrj-own-record]");
+      if (await pill.count()) {
+        await pill.first().click();
+      } else {
+        throw new Error("expected pill or own-record control");
+      }
     } else {
       await page.locator("#mrj-auth-student-chip").waitFor({ state: "visible", timeout: 20000 });
       await page.waitForTimeout(500);
@@ -164,10 +183,18 @@ async function runApp(browser, app, vp) {
 
 async function main() {
   fs.mkdirSync(outDir, { recursive: true });
+  const slugFilter = process.env.SCREENSHOT_APPS
+    ? new Set(process.env.SCREENSHOT_APPS.split(",").map((s) => s.trim()).filter(Boolean))
+    : null;
+  const vpFilter = process.env.SCREENSHOT_VP
+    ? new Set(process.env.SCREENSHOT_VP.split(",").map((s) => s.trim()).filter(Boolean))
+    : null;
+  const apps = slugFilter ? APPS.filter((a) => slugFilter.has(a.slug)) : APPS;
+  const viewports = vpFilter ? VIEWPORTS.filter((v) => vpFilter.has(v.name)) : VIEWPORTS;
   const browser = await chromium.launch();
   const results = [];
-  for (const vp of VIEWPORTS) {
-    for (const app of APPS) {
+  for (const vp of viewports) {
+    for (const app of apps) {
       results.push(await runApp(browser, app, vp));
     }
   }

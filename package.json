@@ -3,6 +3,7 @@
   "private": true,
   "scripts": {
     "test": "node --test test/*.test.js",
+    "test:live": "node --test test/live/mrj-auth-chip-idle.test.js",
     "screenshots": "node scripts/app-screenshots.mjs"
   },
   "devDependencies": {
