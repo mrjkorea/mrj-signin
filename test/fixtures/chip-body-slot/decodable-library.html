@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>decodable library fixture</title>
+    <link rel="stylesheet" href="/mrj-auth.css" />
+    <style>
+      body {
+        margin: 0;
+        font-family: system-ui, sans-serif;
+        background: #0f1a33;
+        color: #f5f8ff;
+      }
+      .app-header {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        padding: 0.55rem 0.75rem;
+        gap: 0.45rem;
+        max-width: 14rem;
+      }
+      .app-header h1 {
+        margin: 0;
+        font-size: 1rem;
+      }
+      .app-header p {
+        margin: 0.15rem 0 0;
+        font-size: 0.8rem;
+        opacity: 0.85;
+      }
+      .header-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.35rem;
+      }
+      .header-actions button {
+        padding: 0.35rem 0.55rem;
+        font-size: 0.8rem;
+      }
+      .nav-links {
+        text-align: center;
+        padding: 0.35rem 0.75rem 0.5rem;
+      }
+      .nav-links a {
+        display: block;
+        color: #e2a122;
+        text-decoration: underline;
+        margin: 0.2rem 0;
+        font-size: 0.95rem;
+      }
+      .book-grid {
+        display: none;
+        padding: 0.5rem 0.75rem 1rem;
+      }
+      .book-grid.ready {
+        display: block;
+      }
+      .book-card {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        margin-bottom: 0.65rem;
+        padding: 0.55rem;
+        border-radius: 12px;
+        background: #1a2744;
+      }
+      .book-card .meta {
+        flex: 1;
+        min-width: 0;
+      }
+      .book-card .title {
+        font-weight: 700;
+        font-size: 0.95rem;
+      }
+      .book-card button {
+        flex-shrink: 0;
+        padding: 0.4rem 0.75rem;
+      }
+    </style>
+  </head>
+  <body>
+    <header class="app-header">
+      <div>
+        <h1>MRJ Decodables</h1>
+        <p>Books 71–100</p>
+      </div>
+      <div class="header-actions">
+        <button type="button" id="btn-books">Books</button>
+        <button type="button" id="btn-switch">Switch</button>
+      </div>
+    </header>
+    <nav class="nav-links">
+      <a href="#41">Books 41–70</a>
+      <a href="#71">Books 71–100</a>
+    </nav>
+    <div class="book-grid" id="book-grid">
+      <div class="book-card card">
+        <div class="meta">
+          <div class="title">Blue Is a Trick</div>
+          <div class="code">DEC 071 • schwa</div>
+        </div>
+        <button type="button" class="card-next">Next</button>
+      </div>
+      <div class="book-card card">
+        <div class="meta">
+          <div class="title">Grey Wins</div>
+          <div class="code">DEC 072 • ey they</div>
+        </div>
+        <button type="button" disabled>Locked</button>
+      </div>
+    </div>
+    <script>
+      globalThis.MRJ_AUTH_TEST_MODE = true;
+      setTimeout(function () {
+        document.getElementById("book-grid").classList.add("ready");
+      }, 1000);
+    </script>
+    <script src="/mrj-auth.js"></script>
+    <script src="/mrj-auth-boot.js" data-mrj-app="mrj-decodable-try-71"></script>
+  </body>
+</html>

@@ -1567,6 +1567,69 @@
     return out;
   }
 
+  function isCanvasRelatedNode_(node) {
+    if (!node || node.nodeType !== 1) return false;
+    var tag = (node.tagName || "").toLowerCase();
+    if (tag === "canvas") return true;
+    if (node.closest && node.closest("canvas")) return true;
+    return false;
+  }
+
+  function isChipMarginValidationTarget_(node) {
+    if (!node || node.nodeType !== 1) return false;
+    if (node === chipEl || node === panelRootEl) return false;
+    if (isCanvasRelatedNode_(node)) return false;
+    if (node.closest && node.closest("#mrj-auth-student-chip, .mrj-auth-panel-root, #mrj-auth-gate, .mrj-auth")) {
+      return false;
+    }
+    try {
+      var style = global.getComputedStyle ? global.getComputedStyle(node) : null;
+      if (style) {
+        if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") return false;
+      }
+      if (node.hidden) return false;
+      var r = node.getBoundingClientRect();
+      if (!r || r.width < 2 || r.height < 2) return false;
+    } catch (ignore) {
+      return false;
+    }
+    if (isChipObstacle_(node)) return true;
+    var cls = node.className && String(node.className).toLowerCase();
+    if (cls && cls.indexOf("card") !== -1) return true;
+    return false;
+  }
+
+  function collectChipMarginValidationTargets_() {
+    var out = [];
+    if (!global.document || !global.document.querySelectorAll) return out;
+    var nodes = global.document.querySelectorAll(
+      "button, a, select, input, textarea, [role='button'], [onclick], [class*='card']"
+    );
+    for (var i = 0; i < nodes.length; i++) {
+      if (isChipMarginValidationTarget_(nodes[i])) out.push(nodes[i]);
+    }
+    return out;
+  }
+
+  function chipMarginTopOverlapsTarget_(chipRect, node) {
+    if (!chipRect || !node) return false;
+    try {
+      var r = node.getBoundingClientRect();
+      if (!r || !r.width) return false;
+      return rectsOverlap_(chipRect, r);
+    } catch (ignore) {
+      return false;
+    }
+  }
+
+  function chipMarginTopFitsViewport_(chipRect) {
+    if (!chipRect) return false;
+    var vh = global.innerHeight || 800;
+    if (chipRect.top < -2) return false;
+    if (chipRect.bottom > vh - 8) return false;
+    return true;
+  }
+
   function isChipTextObstacle_(node, compact) {
     if (!compact) return false;
     if (!node || node.nodeType !== 1) return false;
@@ -1844,18 +1907,18 @@
     var controlObs = collectChipObstacles_();
     var anchorRect = chipLayoutRectWithMargin_(0);
     if (!anchorRect || !anchorRect.width) return "";
-    var headerBandBottom = anchorRect.bottom + (compact ? 56 : 24);
-    var maxIter = compact ? 6 : 12;
+    var maxMarginPx = compact ? 100 : 64;
+    var maxIter = 8;
     var extraTop = 0;
     while (maxIter-- > 0) {
       var chipRect = chipLayoutRectWithMargin_(extraTop);
       if (!chipRect || !chipRect.width) break;
+      var bandLimit = chipRect.bottom + 24;
       var bump = 0;
       for (var c = 0; c < controlObs.length; c++) {
         var cor = controlObs[c].getBoundingClientRect();
         if (!cor || !cor.width) continue;
-        if (compact && cor.top > headerBandBottom) continue;
-        if (!compact && cor.top > chipRect.bottom + 40) continue;
+        if (cor.top > bandLimit) continue;
         if (cor.bottom < anchorRect.top - 4) continue;
         if (rectsOverlap_(chipRect, cor)) {
           var cneed = cor.bottom - chipRect.top + 6;
@@ -1867,8 +1930,7 @@
         for (var t = 0; t < textObs.length; t++) {
           var tor = textObs[t].getBoundingClientRect();
           if (!tor || !tor.width) continue;
-          if (compact && tor.top > headerBandBottom) continue;
-          if (!compact && tor.top > chipRect.bottom + 28) continue;
+          if (tor.top > bandLimit) continue;
           if (tor.bottom < anchorRect.top - 4) continue;
           if (!verticalOverlapChip_(chipRect, tor)) continue;
           if (compact && !obstacleOverlapsChipColumn_(anchorRect, tor)) continue;
@@ -1880,8 +1942,24 @@
       }
       if (bump <= 0) break;
       extraTop += bump;
+      if (extraTop > maxMarginPx) {
+        extraTop = 0;
+        break;
+      }
+      var trialRect = chipLayoutRectWithMargin_(extraTop);
+      if (!chipMarginTopFitsViewport_(trialRect)) {
+        extraTop = 0;
+        break;
+      }
     }
-    return extraTop > 0 ? extraTop + "px" : "";
+    if (extraTop <= 0 || extraTop > maxMarginPx) return "";
+    var finalRect = chipLayoutRectWithMargin_(extraTop);
+    if (!chipMarginTopFitsViewport_(finalRect)) return "";
+    var validationTargets = collectChipMarginValidationTargets_();
+    for (var v = 0; v < validationTargets.length; v++) {
+      if (chipMarginTopOverlapsTarget_(finalRect, validationTargets[v])) return "";
+    }
+    return extraTop + "px";
   }
 
   function applyChipLayout_() {
