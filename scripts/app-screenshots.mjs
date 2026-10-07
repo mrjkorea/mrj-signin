@@ -23,7 +23,7 @@ const APPS = [
   { slug: "firefighter-spelling", url: "https://mrjkorea.github.io/firefighter-spelling/", programs: ["firefighter-spelling"] },
   { slug: "typing-kids", url: "https://mrjkorea.github.io/typing-kids/", programs: ["typing-kids"] },
   { slug: "skill-builder-g1", url: "https://mrjkorea.github.io/skill-builder-g1/", programs: ["skill-builder-g1"] },
-  { slug: "MRJ-Zap-Grammar-Books", url: "https://mrjkorea.github.io/MRJ-Zap-Grammar-Books/", programs: ["greenzap"], chipOff: true },
+  { slug: "MRJ-Zap-Grammar-Books", url: "https://mrjkorea.github.io/MRJ-Zap-Grammar-Books/", programs: ["greenzap"] },
   { slug: "pronounce", url: "https://mrjkorea.github.io/pronounce/", programs: ["pronounce"] },
   { slug: "pronounce-whistle", url: "https://mrjkorea.github.io/pronounce-whistle/", programs: ["pronounce"] },
   { slug: "mrj-decodable-try-41", url: "https://mrjkorea.github.io/mrj-decodable-try-41/", programs: ["decodable"] },
@@ -44,10 +44,23 @@ function sampleRows(programs) {
   ];
 }
 
+async function zapCheck(page) {
+  return page.evaluate(() => {
+    const chip = document.getElementById("mrj-auth-student-chip");
+    const pill = document.querySelector(".student-pill, [data-mrj-name-pill]");
+    if (chip && !chip.hidden && pill) return "chip and pill both visible";
+    if (pill && pill.getAttribute("data-mrj-pill-wired") !== "1") return "pill not wired";
+    if (!pill) return "no pill";
+    return "ok";
+  });
+}
+
 async function chipCollision(page) {
   return page.evaluate(() => {
     const chip = document.getElementById("mrj-auth-student-chip");
-    if (!chip || chip.hidden) return "no chip (ok if chip off)";
+    const pill = document.querySelector(".student-pill, [data-mrj-name-pill]");
+    if (pill && pill.offsetParent !== null) return "pill (chip hidden)";
+    if (!chip || chip.hidden) return "no chip";
     const cr = chip.getBoundingClientRect();
     const selectors =
       "button, a, select, input, textarea, [role='button'], [onclick], .pill, [class*='pill'], [class*='badge']";
@@ -127,17 +140,16 @@ async function runApp(browser, app, vp) {
   try {
     await page.goto(app.url, { waitUntil: "domcontentloaded", timeout: 60000 });
     await page.waitForTimeout(4500);
-    if (app.chipOff) {
-      chipStatus = "chip off";
+    if (app.slug === "MRJ-Zap-Grammar-Books") {
+      await page.waitForTimeout(1000);
+      chipStatus = await zapCheck(page);
+      await page.screenshot({ path: path.join(outDir, `${app.slug}-${vp.name}-chip.png`) });
+      await page.locator(".student-pill").click();
     } else {
       await page.locator("#mrj-auth-student-chip").waitFor({ state: "visible", timeout: 20000 });
       await page.waitForTimeout(500);
       chipStatus = await chipCollision(page);
       await page.screenshot({ path: path.join(outDir, `${app.slug}-${vp.name}-chip.png`) });
-    }
-    if (app.chipOff) {
-      await page.evaluate(() => window.MRJ_AUTH && window.MRJ_AUTH.openProgressPanel());
-    } else {
       await page.locator("#mrj-auth-student-chip").click();
     }
     await page.locator(".mrj-auth-panel").waitFor({ state: "visible", timeout: 15000 });

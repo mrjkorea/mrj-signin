@@ -21,7 +21,7 @@ Browser sign-in and score history for MRJ classroom apps on GitHub Pages.
 | `data-mrj-panel-app` | Optional panel routing override (e.g. `pronounce-whistle` when boot `data-mrj-app` is `pronounce`). |
 | `data-mrj-item-include` | Optional regex; only rows whose `item_id` matches are shown. |
 | `data-mrj-item-exclude` | Optional regex; matching `item_id` rows are hidden. |
-| `data-mrj-chip="off"` | Hide the fixed top-right name chip; use your own control and call `MRJ_AUTH.openProgressPanel()`. |
+| `data-mrj-chip="off"` | Force-hide the fixed chip (even if a name pill exists). Otherwise, a visible `.student-pill` or `[data-mrj-name-pill]` hides the chip and opens the panel on click/Enter. |
 | `data-mrj-chip-top` / `data-mrj-chip-right` | Optional CSS lengths for chip position (e.g. `3.5rem`). |
 
 ## Student name chip
@@ -33,7 +33,7 @@ Clicking the chip opens **My scores** for the current app. Sign out is available
 ## My scores panel API
 
 ```javascript
-MRJ_AUTH.openProgressPanel();  // no-op if not signed in; never throws
+MRJ_AUTH.openProgressPanel();  // no-op if not signed in or panel already open; never throws
 MRJ_AUTH.closeProgressPanel(); // no-op if not signed in; never throws
 MRJ_AUTH.setPanelRowsProvider(function (studentId) {
   // optional: return rows or Promise<rows>

@@ -6,6 +6,7 @@ const vm = require("vm");
 
 function mkNode(tag, className) {
   const n = {
+    nodeType: 1,
     tagName: tag,
     className: className || "",
     classNames: className ? className.split(/\s+/) : [],
@@ -37,6 +38,9 @@ function mkNode(tag, className) {
         if (on && !has) n.classNames.push(cls);
         if (!on) n.classNames = n.classNames.filter((x) => x !== cls);
         n.className = n.classNames.join(" ");
+      },
+      contains(cls) {
+        return n.classNames.includes(cls);
       }
     },
     setAttribute(k, v) {
@@ -50,7 +54,7 @@ function mkNode(tag, className) {
       if (k === "aria-hidden") n.hidden = v === "true";
     },
     getAttribute(k) {
-      return n.attributes[k];
+      return n.attributes[k] == null ? null : String(n.attributes[k]);
     },
     focus() {},
     getBoundingClientRect() {
@@ -121,6 +125,21 @@ function loadMrjAuth(fetchImpl, session, timeoutMs) {
   if (session) storage["mrj.auth.session"] = JSON.stringify(session);
   const root = mkNode("div");
   const body = mkNode("body");
+  body.querySelectorAll = function (sel) {
+    const out = [];
+    (function walk(n) {
+      n.children.forEach((c) => {
+        if (sel.indexOf("student-pill") !== -1 && c.classNames && c.classNames.includes("student-pill")) {
+          out.push(c);
+        }
+        if (sel.indexOf("mrj-name-pill") !== -1 && c.attributes && c.attributes["data-mrj-name-pill"]) {
+          out.push(c);
+        }
+        walk(c);
+      });
+    })(body);
+    return out;
+  };
   const html = mkNode("html");
   html.appendChild(body);
   const sandbox = {
@@ -152,10 +171,16 @@ function loadMrjAuth(fetchImpl, session, timeoutMs) {
         if (sel === "#mrj-auth-student-chip") {
           return body.children.find((c) => c.id === "mrj-auth-student-chip") || null;
         }
+        if (sel && sel.indexOf("student-pill") !== -1) {
+          return body.children.find((c) => c.classNames && c.classNames.includes("student-pill")) || null;
+        }
+        if (sel && sel.indexOf("mrj-name-pill") !== -1) {
+          return body.children.find((c) => c.attributes && c.attributes["data-mrj-name-pill"]) || null;
+        }
         if (sel.startsWith("script")) return null;
-        return root;
+        return null;
       },
-      querySelectorAll: () => [],
+      querySelectorAll: (sel) => body.querySelectorAll(sel),
       createElement: (tag) => mkNode(tag)
     },
     location: { pathname: "/" },

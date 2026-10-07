@@ -24,6 +24,30 @@ describe("panel filters and fetch", () => {
     );
   });
 
+  it("day2 merge prefers day2-words row over legacy word-master for same item_id", () => {
+    const { auth, root } = loadMrjAuth(() => jsonResponse({ ok: false }));
+    auth.mount(root, { app: "day2-words" });
+    const merged = auth._test.collapseServerRowsByItemId([
+      {
+        program: "word-master",
+        item_id: "basic_a_u1:foo",
+        score_value: 8,
+        score_max: 10,
+        updated_at: "2026-10-01"
+      },
+      {
+        program: "day2-words",
+        item_id: "basic_a_u1:foo",
+        score_value: 10,
+        score_max: 10,
+        updated_at: "2026-10-02"
+      }
+    ]);
+    assert.equal(merged.length, 1);
+    assert.equal(merged[0].program, "day2-words");
+    assert.equal(merged[0].score_value, 10);
+  });
+
   it("day2-words keeps word-master rows only when day2 pack regex matches", () => {
     const { auth, root } = loadMrjAuth(() => jsonResponse({ ok: false }));
     auth.mount(root, { app: "day2-words" });

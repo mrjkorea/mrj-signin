@@ -155,6 +155,8 @@
   var chipMutationObserver = null;
   var chipLayoutScheduled = false;
   var chipLayoutLastRun = 0;
+  var chipLayoutTrailingTimer = null;
+  var loadPlaceSeq = 0;
   var busy = false;
   var loginFlightSeq = 0;
   var activeLoginFlight = null;
@@ -612,6 +614,7 @@
   function signOut() {
     viewGen += 1;
     sessionGen += 1;
+    loadPlaceSeq += 1;
     busy = false;
     activeLoginFlight = null;
     state = { id: "", token: "", progress: [], progressError: "" };
@@ -805,6 +808,7 @@
         renderDoors_("Could not check the sign-in book. Try again.");
         return;
       }
+      loadPlaceSeq += 1;
       viewGen += 1;
       busy = false;
       renderDoors_("Didn't save. Try again.");
@@ -944,9 +948,47 @@
     };
   }
 
+  function rowUpdatedMs_(row) {
+    var t = row.updated_at || row.updatedAt || row.local_date || row.localDate || "";
+    var ms = Date.parse(String(t));
+    return isNaN(ms) ? 0 : ms;
+  }
+
+  function primaryScoreProgram_() {
+    var programs = scoreProgramsForApp_();
+    if (programs.length) return String(programs[0]).trim().toLowerCase();
+    return appKey_();
+  }
+
+  function collapseServerRowsByItemId_(rows) {
+    var primary = primaryScoreProgram_();
+    var groups = {};
+    (rows || []).forEach(function (row) {
+      var id = rowItemId_(row);
+      if (!id) return;
+      if (!groups[id]) groups[id] = [];
+      groups[id].push(row);
+    });
+    var out = [];
+    for (var id in groups) {
+      if (!Object.prototype.hasOwnProperty.call(groups, id)) continue;
+      var pool = groups[id];
+      var primaryRows = pool.filter(function (row) {
+        return rowProgramName_(row).toLowerCase() === primary;
+      });
+      var pickFrom = primaryRows.length ? primaryRows : pool;
+      pickFrom.sort(function (a, b) {
+        return rowUpdatedMs_(b) - rowUpdatedMs_(a);
+      });
+      out.push(pickFrom[0]);
+    }
+    return out;
+  }
+
   function mergeProviderRows_(serverRows, providerRows) {
+    serverRows = collapseServerRowsByItemId_(serverRows || []);
     var map = {};
-    (serverRows || []).forEach(function (row) {
+    serverRows.forEach(function (row) {
       var id = rowItemId_(row);
       if (!id) return;
       map[id] = row;
@@ -1054,11 +1096,13 @@
   }
 
   function loadPlace_(id, tokenValue) {
+    var seq = ++loadPlaceSeq;
     var loadGen = sessionGen;
     var loadId = id == null ? "" : String(id);
     var loadToken = tokenValue == null ? "" : String(tokenValue);
     renderStatus_(MESSAGES.loading_place);
     fetchAllProgress_(loadId, loadToken, appProgram_()).then(function (result) {
+      if (seq !== loadPlaceSeq) return;
       if (loadGen !== sessionGen) return;
       if (state.id && rules.idKey(state.id) !== rules.idKey(loadId)) return;
       if (result && result.ok) {
@@ -1073,6 +1117,7 @@
       finish_((result && result.id) || loadId, (result && result.token) || loadToken, [], err);
       retryProgressInBackground_(state.id, state.token);
     }).catch(function () {
+      if (seq !== loadPlaceSeq) return;
       if (loadGen !== sessionGen) return;
       if (state.id && rules.idKey(state.id) !== rules.idKey(loadId)) return;
       finish_(loadId, loadToken, [], "network");
@@ -1312,12 +1357,26 @@
       }
     } catch (ignore) {}
     chipMutationObserver = null;
+    if (chipLayoutTrailingTimer) {
+      clearTimeout(chipLayoutTrailingTimer);
+      chipLayoutTrailingTimer = null;
+    }
+  }
+
+  function refreshNamePillUi_() {
+    if (!state.id || chipDisabled_()) return;
+    var pill = findNamePill_();
+    if (pill) {
+      if (chipEl) chipEl.hidden = true;
+      wireNamePill_(pill);
+    }
   }
 
   function installChipObserver_() {
     if (!global.document || !global.document.body || chipMutationObserver) return;
     if (typeof MutationObserver !== "function") return;
     chipMutationObserver = new MutationObserver(function () {
+      refreshNamePillUi_();
       scheduleChipLayout_();
     });
     try {
@@ -1332,16 +1391,26 @@
 
   function scheduleChipLayout_() {
     if (!chipEl || chipEl.hidden) return;
-    if (chipLayoutScheduled) return;
-    chipLayoutScheduled = true;
-    var raf = global.requestAnimationFrame || function (fn) { setTimeout(fn, 16); };
-    raf(function () {
-      chipLayoutScheduled = false;
-      var now = Date.now();
-      if (now - chipLayoutLastRun < 500) return;
-      chipLayoutLastRun = now;
+    var now = Date.now();
+    var since = now - chipLayoutLastRun;
+    if (since >= 500) {
+      if (chipLayoutTrailingTimer) {
+        clearTimeout(chipLayoutTrailingTimer);
+        chipLayoutTrailingTimer = null;
+      }
+      var raf = global.requestAnimationFrame || function (fn) { setTimeout(fn, 16); };
+      raf(function () {
+        chipLayoutLastRun = Date.now();
+        adjustChipPosition_();
+      });
+      return;
+    }
+    if (chipLayoutTrailingTimer) return;
+    chipLayoutTrailingTimer = setTimeout(function () {
+      chipLayoutTrailingTimer = null;
+      chipLayoutLastRun = Date.now();
       adjustChipPosition_();
-    });
+    }, 500 - since);
   }
 
   function chipOffsetStyles_() {
@@ -1446,6 +1515,82 @@
     } catch (ignore) {}
   }
 
+  function isElementVisible_(node) {
+    if (!node || node.nodeType !== 1) return false;
+    try {
+      if (node.hidden) return false;
+      var style = global.getComputedStyle ? global.getComputedStyle(node) : null;
+      if (style) {
+        if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") {
+          return false;
+        }
+      }
+      var r = node.getBoundingClientRect();
+      return !!(r && r.width > 1 && r.height > 1);
+    } catch (ignore) {
+      return false;
+    }
+  }
+
+  function findNamePill_() {
+    if (!global.document) return null;
+    var pill = null;
+    if (global.document.querySelector) {
+      pill = global.document.querySelector(".student-pill, [data-mrj-name-pill]");
+    }
+    if ((!pill || !isElementVisible_(pill)) && global.document.querySelectorAll) {
+      var nodes = global.document.querySelectorAll(".student-pill, [data-mrj-name-pill]");
+      for (var i = 0; i < nodes.length; i++) {
+        if (isElementVisible_(nodes[i])) {
+          pill = nodes[i];
+          break;
+        }
+      }
+    }
+    if ((!pill || !isElementVisible_(pill)) && global.document.body && global.document.body.children) {
+      var kids = global.document.body.children;
+      for (var j = 0; j < kids.length; j++) {
+        var node = kids[j];
+        if (!node || node.nodeType !== 1) continue;
+        var isPill = false;
+        if (node.classList && node.classList.contains("student-pill")) isPill = true;
+        if (node.getAttribute && node.getAttribute("data-mrj-name-pill")) isPill = true;
+        if (node.className && String(node.className).indexOf("student-pill") !== -1) isPill = true;
+        if (isPill && isElementVisible_(node)) {
+          pill = node;
+          break;
+        }
+      }
+    }
+    if (!pill || !isElementVisible_(pill)) return null;
+    return pill;
+  }
+
+  function wireNamePill_(pill) {
+    if (!pill || pill.getAttribute("data-mrj-pill-wired") === "1") return;
+    pill.setAttribute("data-mrj-pill-wired", "1");
+    pill.setAttribute("role", "button");
+    pill.setAttribute("tabindex", "0");
+    try {
+      pill.style.cursor = "pointer";
+    } catch (ignore) {}
+    pill.setAttribute("aria-label", "My scores for " + (state.id || ""));
+    pill.addEventListener("click", function () {
+      try {
+        openProgressPanel();
+      } catch (ignore) {}
+    });
+    pill.addEventListener("keydown", function (ev) {
+      if (!ev) return;
+      if (ev.key === "Enter" || ev.key === " ") {
+        ev.preventDefault();
+        try {
+          openProgressPanel();
+        } catch (ignore) {}
+      }
+    });
+  }
+
   function ensureChipDom_() {
     if (!global.document || !global.document.body) return;
     if (!chipEl) {
@@ -1477,7 +1622,20 @@
     try {
       if (!global.document || !global.document.body) return;
       ensureChipDom_();
-      if (chipDisabled_() || !state.id) {
+      if (!state.id) {
+        if (chipEl) chipEl.hidden = true;
+        return;
+      }
+      installChipObserver_();
+      if (!chipDisabled_()) {
+        var pill = findNamePill_();
+        if (pill) {
+          if (chipEl) chipEl.hidden = true;
+          wireNamePill_(pill);
+          return;
+        }
+      }
+      if (chipDisabled_()) {
         if (chipEl) chipEl.hidden = true;
         return;
       }
@@ -1630,6 +1788,7 @@
   function openProgressPanel() {
     try {
       if (!state.id || !state.token) return;
+      if (panelOpen && panelRootEl && !panelRootEl.hidden) return;
       ensureChipDom_();
       panelOpen = true;
       panelFetchGen += 1;
@@ -1732,6 +1891,16 @@
       updateStudentChip: updateStudentChip_,
       adjustChipPosition: adjustChipPosition_,
       mergeProviderRows: mergeProviderRows_,
+      collapseServerRowsByItemId: collapseServerRowsByItemId_,
+      loadPlace: loadPlace_,
+      scheduleChipLayout: scheduleChipLayout_,
+      setChipLayoutLastRun: function (t) {
+        chipLayoutLastRun = t;
+      },
+      chipTrailingPending: function () {
+        return !!chipLayoutTrailingTimer;
+      },
+      findNamePill: findNamePill_,
       REQUEST_TIMEOUT_MS: REQUEST_TIMEOUT_MS,
       AUTH_VERSION: AUTH_VERSION,
       APP_SCORE_PROGRAM_MAP: APP_SCORE_PROGRAM_MAP,
