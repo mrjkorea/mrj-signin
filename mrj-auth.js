@@ -163,6 +163,8 @@
   var chipIdleMutationCount = 0;
   var chipIdleMutationObserver = null;
   var chipBodySlotPx_ = 0;
+  var CHIP_BODY_SLOT_MAX_PX_ = 44;
+  var CHIP_BODY_SLOT_HYSTERESIS_PX_ = 2;
   var chipApplied_ = {
     compact: null,
     top: "",
@@ -1597,7 +1599,8 @@
       if (!r || r.width < 2 || r.height < 2) return false;
       var vh = global.innerHeight || 800;
       var vw = global.innerWidth || 800;
-      if (r.height > vh * 0.28 || r.width > vw * 0.94) return false;
+      if (r.height > vh * 0.28) return false;
+      if (!isHeading && r.width > vw * 0.94) return false;
       if (r.bottom < 0 || r.top > vh * 0.55) return false;
     } catch (ignore) {
       return false;
@@ -1623,10 +1626,123 @@
     return m ? parseFloat(m[1]) : 0;
   }
 
+  function chipCssPosition_(node) {
+    if (!node || node.nodeType !== 1 || !global.getComputedStyle) return "";
+    try {
+      return global.getComputedStyle(node).position || "";
+    } catch (ignore) {
+      return "";
+    }
+  }
+
+  function isOutOfFlowForChipPad_(node) {
+    if (!node || node.nodeType !== 1) return true;
+    if (node === chipEl) return true;
+    if (node.closest && node.closest("#mrj-auth-student-chip, .mrj-auth-panel-root, #mrj-auth-gate, .mrj-auth")) {
+      return true;
+    }
+    var cur = node;
+    while (cur && cur.nodeType === 1) {
+      var pos = chipCssPosition_(cur);
+      if (pos === "fixed" || pos === "sticky" || pos === "absolute") return true;
+      if (cur === global.document.body || cur === global.document.documentElement) break;
+      cur = cur.parentElement;
+    }
+    return false;
+  }
+
+  function verticalOverlapChip_(anchorRect, obstacleRect) {
+    if (!anchorRect || !obstacleRect) return false;
+    return (
+      obstacleRect.top < anchorRect.bottom + 2 &&
+      obstacleRect.bottom > anchorRect.top - 2
+    );
+  }
+
+  function paddingToClearObstacleTop_(anchorRect, obstacleTop) {
+    var need = anchorRect.bottom + 6 - obstacleTop;
+    return need > 0 ? need : 0;
+  }
+
+  function obstacleRectSansBodyPad_(node, slotPx) {
+    if (isOutOfFlowForChipPad_(node)) return null;
+    var r = node.getBoundingClientRect();
+    if (!r || r.width < 2 || r.height < 2) return null;
+    var shift = slotPx || 0;
+    return {
+      left: r.left,
+      right: r.right,
+      top: r.top - shift,
+      bottom: r.bottom - shift,
+      width: r.width,
+      height: r.height
+    };
+  }
+
+  function isFullScreenNoBodyPadPage_(anchorRect, obstacleNodes) {
+    var doc = global.document;
+    if (!doc) return false;
+    var html = doc.documentElement;
+    var body = doc.body;
+    var vh = global.innerHeight || 800;
+    function overflowClipped(el) {
+      if (!el || !global.getComputedStyle) return false;
+      try {
+        var st = global.getComputedStyle(el);
+        var ov = (st.overflow || "") + " " + (st.overflowY || "") + " " + (st.overflowX || "");
+        return /hidden|clip/.test(ov);
+      } catch (ignore) {
+        return false;
+      }
+    }
+    function heightLocksViewport(el) {
+      if (!el || !el.style) return false;
+      var h = String(el.style.height || "") + " " + String(el.style.minHeight || "");
+      if (/100vh|100dvh|100svh/.test(h)) return true;
+      if (!global.getComputedStyle) return false;
+      try {
+        var st = global.getComputedStyle(el);
+        var ch = (st.height || "") + " " + (st.minHeight || "");
+        return /100vh|100dvh|100svh/.test(ch);
+      } catch (ignore) {
+        return false;
+      }
+    }
+    var viewportFilled = false;
+    if (html && html.scrollHeight > 0 && html.scrollHeight <= vh + 1) viewportFilled = true;
+    if (body && body.scrollHeight > 0 && body.scrollHeight <= vh + 1) viewportFilled = true;
+    if (html && (overflowClipped(html) || heightLocksViewport(html))) return true;
+    if (body && (overflowClipped(body) || heightLocksViewport(body))) return true;
+    if (viewportFilled && doc.querySelector && doc.querySelector("canvas")) return true;
+    if (!anchorRect || !obstacleNodes || !obstacleNodes.length) return false;
+    for (var i = 0; i < obstacleNodes.length; i++) {
+      var node = obstacleNodes[i];
+      if (!node || node.nodeType !== 1) continue;
+      var tag = (node.tagName || "").toLowerCase();
+      if (tag === "canvas") {
+        var cr = node.getBoundingClientRect();
+        if (cr && cr.width && verticalOverlapChip_(anchorRect, cr) && obstacleOverlapsChipColumn_(anchorRect, cr)) {
+          return true;
+        }
+      }
+      if (node.querySelector) {
+        var canvas = node.querySelector("canvas");
+        if (canvas) {
+          var or = obstacleRectSansBodyPad_(node, chipBodySlotPx_);
+          if (or && verticalOverlapChip_(anchorRect, or) && obstacleOverlapsChipColumn_(anchorRect, or)) {
+            return true;
+          }
+        }
+      }
+    }
+    return false;
+  }
+
   function applyChipBodySlot_(px) {
     if (!global.document) return;
     var next = Math.max(0, Math.round(px || 0));
-    if (chipBodySlotPx_ === next) return;
+    if (next > CHIP_BODY_SLOT_MAX_PX_) next = CHIP_BODY_SLOT_MAX_PX_;
+    if (Math.abs(next - chipBodySlotPx_) < CHIP_BODY_SLOT_HYSTERESIS_PX_) return;
     chipBodySlotPx_ = next;
     var body = global.document.body;
     if (!body || !body.style) return;
@@ -1654,21 +1770,22 @@
   }
 
   function computeCompactChipBodySlot_(anchorRect) {
-    var minPad = 0;
-    var chipTop = anchorRect.top;
+    if (!anchorRect || !anchorRect.width) return 0;
     var textObs = collectChipTextObstacles_(true);
     var controlObs = collectChipObstacles_();
     var all = textObs.concat(controlObs);
+    if (isFullScreenNoBodyPadPage_(anchorRect, all)) return 0;
+    var measureSlot = chipBodySlotPx_;
+    var minPad = 0;
     for (var i = 0; i < all.length; i++) {
-      var or = all[i].getBoundingClientRect();
-      if (!or || !or.width) continue;
+      var or = obstacleRectSansBodyPad_(all[i], measureSlot);
+      if (!or) continue;
       if (!obstacleOverlapsChipColumn_(anchorRect, or)) continue;
-      if (or.bottom < chipTop - 2) continue;
-      var need = or.bottom + 8 - chipTop;
+      if (!verticalOverlapChip_(anchorRect, or)) continue;
+      var need = paddingToClearObstacleTop_(anchorRect, or.top);
       if (need > minPad) minPad = need;
     }
-    var maxPad = Math.max(96, (global.innerHeight || 800) * 0.38);
-    if (minPad > maxPad) minPad = maxPad;
+    if (minPad > CHIP_BODY_SLOT_MAX_PX_) minPad = CHIP_BODY_SLOT_MAX_PX_;
     return minPad;
   }
 
@@ -1745,13 +1862,16 @@
           if (cneed > bump) bump = cneed;
         }
       }
-      if (!compact) {
-        var textObs = collectChipTextObstacles_(false);
+      if (!compact || chipBodySlotPx_ === 0) {
+        var textObs = collectChipTextObstacles_(compact);
         for (var t = 0; t < textObs.length; t++) {
           var tor = textObs[t].getBoundingClientRect();
           if (!tor || !tor.width) continue;
-          if (tor.top > chipRect.bottom + 28) continue;
+          if (compact && tor.top > headerBandBottom) continue;
+          if (!compact && tor.top > chipRect.bottom + 28) continue;
           if (tor.bottom < anchorRect.top - 4) continue;
+          if (!verticalOverlapChip_(chipRect, tor)) continue;
+          if (compact && !obstacleOverlapsChipColumn_(anchorRect, tor)) continue;
           if (rectsOverlap_(chipRect, tor)) {
             var tneed = tor.bottom - chipRect.top + 6;
             if (tneed > bump) bump = tneed;
@@ -2266,6 +2386,9 @@
           domWrites: chipDomWriteCount,
           chipMutations: chipIdleMutationCount
         };
+      },
+      getChipBodySlotPx: function () {
+        return chipBodySlotPx_;
       },
       REQUEST_TIMEOUT_MS: REQUEST_TIMEOUT_MS,
       AUTH_VERSION: AUTH_VERSION,
