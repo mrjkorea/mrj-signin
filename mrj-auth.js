@@ -1361,23 +1361,35 @@
       clearTimeout(chipLayoutTrailingTimer);
       chipLayoutTrailingTimer = null;
     }
+    namePillRefreshTimer = null;
   }
+
+  var namePillRefreshTimer = null;
 
   function refreshNamePillUi_() {
     if (!state.id || chipDisabled_()) return;
     var pill = findNamePill_();
     if (pill) {
-      if (chipEl) chipEl.hidden = true;
+      if (chipEl && !chipEl.hidden) chipEl.hidden = true;
       wireNamePill_(pill);
     }
+  }
+
+  function scheduleNamePillRefresh_() {
+    if (namePillRefreshTimer) return;
+    var raf = global.requestAnimationFrame || function (fn) { setTimeout(fn, 16); };
+    namePillRefreshTimer = raf(function () {
+      namePillRefreshTimer = null;
+      refreshNamePillUi_();
+      scheduleChipLayout_();
+    });
   }
 
   function installChipObserver_() {
     if (!global.document || !global.document.body || chipMutationObserver) return;
     if (typeof MutationObserver !== "function") return;
     chipMutationObserver = new MutationObserver(function () {
-      refreshNamePillUi_();
-      scheduleChipLayout_();
+      scheduleNamePillRefresh_();
     });
     try {
       chipMutationObserver.observe(global.document.body, {
@@ -1630,7 +1642,7 @@
       if (!chipDisabled_()) {
         var pill = findNamePill_();
         if (pill) {
-          if (chipEl) chipEl.hidden = true;
+          if (chipEl && !chipEl.hidden) chipEl.hidden = true;
           wireNamePill_(pill);
           return;
         }
