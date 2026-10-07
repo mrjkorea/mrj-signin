@@ -7,7 +7,7 @@
 (function (global) {
   "use strict";
 
-  var AUTH_VERSION = "20261007-progress-1.4";
+  var AUTH_VERSION = "20261007-progress-1.4.1";
   var ENDPOINT = "https://script.google.com/macros/s/AKfycbwtJTUO3gbcMrlAwsn1feWxyp7Rw2cxpfe1bOT9v2rxmQHa2Tlc6pFNWAjU6ZAdlD6kFQ/exec";
   var SESSION_KEY = "mrj.auth.session";
   var REQUEST_TIMEOUT_MS = 30000;
@@ -120,6 +120,7 @@
   var PROGRESS_PAGE_SIZE = 500;
   var PROGRESS_MAX_PAGES = 40;
   var viewGen = 0;
+  var sessionGen = 0;
   var busy = false;
   var loginFlightSeq = 0;
   var activeLoginFlight = null;
@@ -328,6 +329,7 @@
 
   function signOut() {
     viewGen += 1;
+    sessionGen += 1;
     busy = false;
     activeLoginFlight = null;
     state = { id: "", token: "", progress: [], progressError: "" };
@@ -664,7 +666,24 @@
     }
   }
 
+  function captureSession_() {
+    return {
+      gen: sessionGen,
+      id: state.id,
+      token: state.token
+    };
+  }
+
+  function sessionMatches_(snap) {
+    if (!snap) return false;
+    if (snap.gen !== sessionGen) return false;
+    if (!state.id || rules.idKey(state.id) !== rules.idKey(snap.id)) return false;
+    if (String(state.token) !== String(snap.token)) return false;
+    return true;
+  }
+
   function finish_(id, tokenValue, progress, progressError) {
+    sessionGen += 1;
     state.id = id == null ? "" : String(id);
     state.token = tokenValue == null ? "" : String(tokenValue);
     state.progress = Array.isArray(progress) ? progress : [];
@@ -687,13 +706,17 @@
     if (!state.id || !state.token) {
       return Promise.resolve({ ok: false, error: "bad_token" });
     }
+    var snap = captureSession_();
     packState[program] = { loaded: false, json: "", error: "loading" };
     return post_({
       action: "load_pack",
-      id: state.id,
-      token: state.token,
+      id: snap.id,
+      token: snap.token,
       program: program
     }).then(function (data) {
+      if (!sessionMatches_(snap)) {
+        return { ok: false, error: "stale_session" };
+      }
       if (!data || !data.ok) {
         packState[program] = {
           loaded: false,
@@ -706,6 +729,9 @@
       packState[program] = { loaded: true, json: json, error: "" };
       return { ok: true, found: !!data.found, progress_json: json };
     }).catch(function () {
+      if (!sessionMatches_(snap)) {
+        return { ok: false, error: "stale_session" };
+      }
       packState[program] = { loaded: false, json: "", error: "network" };
       return { ok: false, error: "network" };
     });
@@ -720,13 +746,17 @@
     if (!ps || !ps.loaded) {
       return Promise.resolve({ ok: false, error: "pack_not_loaded" });
     }
+    var snap = captureSession_();
     return post_({
       action: "save_pack",
-      id: state.id,
-      token: state.token,
+      id: snap.id,
+      token: snap.token,
       program: program,
       progress_json: progressJson == null ? "{}" : String(progressJson)
     }).then(function (data) {
+      if (!sessionMatches_(snap)) {
+        return { ok: false, error: "stale_session" };
+      }
       if (data && data.ok) {
         packState[program] = {
           loaded: true,
@@ -739,6 +769,9 @@
       }
       return data || { ok: false, error: "save_failed" };
     }).catch(function () {
+      if (!sessionMatches_(snap)) {
+        return { ok: false, error: "stale_session" };
+      }
       if (packState[program]) {
         packState[program].loaded = false;
         packState[program].error = "network";
@@ -758,7 +791,17 @@
     if (!state.id || !state.token) {
       return Promise.resolve({ ok: false, error: "bad_token", progress: [] });
     }
-    return fetchAllProgress_(state.id, state.token, program);
+    var snap = captureSession_();
+    return fetchAllProgress_(snap.id, snap.token, program).then(function (result) {
+      if (!sessionMatches_(snap)) {
+        return { ok: false, error: "stale_session", progress: [] };
+      }
+      return result;
+    });
+  }
+
+  function idKey(id) {
+    return String(id == null ? "" : id).trim().toLowerCase();
   }
 
   function errorText_(data) {
@@ -873,7 +916,8 @@
     loadPack: loadPack,
     savePack: savePack,
     packReady: packReady,
-    progressError: progressError
+    progressError: progressError,
+    idKey: idKey
   };
 
   if (global.MRJ_AUTH_TEST_MODE) {
