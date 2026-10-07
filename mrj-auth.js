@@ -153,9 +153,26 @@
   var panelKeyHandler = null;
   var panelRowsProvider = null;
   var chipMutationObserver = null;
-  var chipLayoutScheduled = false;
   var chipLayoutLastRun = 0;
   var chipLayoutTrailingTimer = null;
+  var chipChromeTimer = null;
+  var chipObserverMuted = 0;
+  var chipLayoutRunCount = 0;
+  var chipObserverNotifyCount = 0;
+  var chipObserverIgnoredCount = 0;
+  var chipDomWriteCount = 0;
+  var chipIdleMutationCount = 0;
+  var chipIdleMutationObserver = null;
+  var chipApplied_ = {
+    compact: null,
+    top: "",
+    right: "",
+    marginTop: "",
+    marginRight: "",
+    text: "",
+    title: "",
+    ariaLabel: ""
+  };
   var loadPlaceSeq = 0;
   var busy = false;
   var loginFlightSeq = 0;
@@ -1361,35 +1378,87 @@
       clearTimeout(chipLayoutTrailingTimer);
       chipLayoutTrailingTimer = null;
     }
-    namePillRefreshTimer = null;
+    chipChromeTimer = null;
+    if (chipIdleMutationObserver && chipIdleMutationObserver.disconnect) {
+      try {
+        chipIdleMutationObserver.disconnect();
+      } catch (ignore) {}
+    }
+    chipIdleMutationObserver = null;
   }
 
-  var namePillRefreshTimer = null;
-
-  function refreshNamePillUi_() {
-    if (!state.id || chipDisabled_()) return;
-    var pill = findNamePill_();
-    if (pill) {
-      if (chipEl && !chipEl.hidden) chipEl.hidden = true;
-      wireNamePill_(pill);
+  function muteChipObserver_(fn) {
+    chipObserverMuted += 1;
+    try {
+      fn();
+    } finally {
+      chipObserverMuted -= 1;
     }
   }
 
-  function scheduleNamePillRefresh_() {
-    if (namePillRefreshTimer) return;
+  function isInsideAuthChrome_(node) {
+    if (!node || node.nodeType !== 1) return false;
+    if (chipEl && (node === chipEl || (chipEl.contains && chipEl.contains(node)))) return true;
+    if (panelRootEl && (node === panelRootEl || (panelRootEl.contains && panelRootEl.contains(node)))) {
+      return true;
+    }
+    if (node.closest) {
+      if (node.closest("#mrj-auth-gate, .mrj-auth, #mrj-auth-student-chip, .mrj-auth-panel-root")) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function isPillWiringMutation_(record) {
+    if (!record || record.type !== "attributes") return false;
+    var t = record.target;
+    if (!t || !t.getAttribute) return false;
+    if (t.getAttribute("data-mrj-pill-wired") !== "1") return false;
+    var name = record.attributeName || "";
+    return (
+      name === "data-mrj-pill-wired" ||
+      name === "role" ||
+      name === "tabindex" ||
+      name === "aria-label" ||
+      name === "style" ||
+      name === "class"
+    );
+  }
+
+  function mutationRecordsNeedLayout_(records) {
+    if (!records || !records.length) return false;
+    for (var i = 0; i < records.length; i++) {
+      var r = records[i];
+      var t = r.target;
+      if (!t || t.nodeType !== 1) continue;
+      if (isInsideAuthChrome_(t)) continue;
+      if (isPillWiringMutation_(r)) continue;
+      return true;
+    }
+    return false;
+  }
+
+  function scheduleStudentChrome_() {
+    if (chipChromeTimer) return;
     var raf = global.requestAnimationFrame || function (fn) { setTimeout(fn, 16); };
-    namePillRefreshTimer = raf(function () {
-      namePillRefreshTimer = null;
-      refreshNamePillUi_();
-      scheduleChipLayout_();
+    chipChromeTimer = raf(function () {
+      chipChromeTimer = null;
+      applyStudentChrome_();
     });
   }
 
   function installChipObserver_() {
     if (!global.document || !global.document.body || chipMutationObserver) return;
     if (typeof MutationObserver !== "function") return;
-    chipMutationObserver = new MutationObserver(function () {
-      scheduleNamePillRefresh_();
+    chipMutationObserver = new MutationObserver(function (records) {
+      if (chipObserverMuted > 0) return;
+      if (!mutationRecordsNeedLayout_(records)) {
+        chipObserverIgnoredCount += 1;
+        return;
+      }
+      chipObserverNotifyCount += 1;
+      scheduleStudentChrome_();
     });
     try {
       chipMutationObserver.observe(global.document.body, {
@@ -1397,6 +1466,22 @@
         subtree: true,
         attributes: true,
         attributeFilter: ["class", "style", "hidden"]
+      });
+    } catch (ignore) {}
+  }
+
+  function installChipIdleMutationWatcher_() {
+    if (!global.MRJ_AUTH_TEST_MODE || !chipEl || chipIdleMutationObserver) return;
+    if (typeof MutationObserver !== "function") return;
+    chipIdleMutationObserver = new MutationObserver(function () {
+      chipIdleMutationCount += 1;
+    });
+    try {
+      chipIdleMutationObserver.observe(chipEl, {
+        attributes: true,
+        childList: true,
+        characterData: true,
+        subtree: true
       });
     } catch (ignore) {}
   }
@@ -1413,7 +1498,7 @@
       var raf = global.requestAnimationFrame || function (fn) { setTimeout(fn, 16); };
       raf(function () {
         chipLayoutLastRun = Date.now();
-        adjustChipPosition_();
+        applyChipLayout_();
       });
       return;
     }
@@ -1421,7 +1506,7 @@
     chipLayoutTrailingTimer = setTimeout(function () {
       chipLayoutTrailingTimer = null;
       chipLayoutLastRun = Date.now();
-      adjustChipPosition_();
+      applyChipLayout_();
     }, 500 - since);
   }
 
@@ -1479,52 +1564,112 @@
     return out;
   }
 
-  function adjustChipPosition_() {
-    if (!chipEl || chipEl.hidden || !global.document) return;
-    try {
-      var vw = global.innerWidth || 800;
-      var compact = vw < 480;
-      chipEl.classList.toggle("mrj-auth-chip-compact", compact);
-      var offsets = chipOffsetStyles_();
-      var baseTop = offsets.top
-        ? offsets.top
-        : "calc(0.55rem + env(safe-area-inset-top, 0px))";
-      var baseRight = offsets.right
-        ? offsets.right
-        : "calc(0.55rem + env(safe-area-inset-right, 0px))";
-      chipEl.style.top = baseTop;
-      chipEl.style.right = baseRight;
-      chipEl.style.marginRight = "";
-      chipEl.style.marginTop = "";
-      var displayId = state.id || "";
-      if (compact && displayId.length > 10) {
-        chipEl.textContent = displayId.slice(0, 8) + "…";
-        chipEl.title = displayId;
-      } else {
-        chipEl.textContent = displayId;
-        chipEl.title = "";
-      }
-      var obstacles = collectChipObstacles_();
-      var maxIter = 24;
-      var extraTop = 0;
-      while (maxIter-- > 0) {
-        var chipRect = chipEl.getBoundingClientRect();
-        if (!chipRect || !chipRect.width) break;
-        var bump = 0;
-        for (var j = 0; j < obstacles.length; j++) {
-          var or = obstacles[j].getBoundingClientRect();
-          if (!or || !or.width) continue;
-          if (or.top > chipRect.bottom + 40) continue;
-          if (rectsOverlap_(chipRect, or)) {
-            var need = or.bottom - chipRect.top + 6;
-            if (need > bump) bump = need;
-          }
+  function chipWriteStyle_(prop, value) {
+    if (!chipEl || !chipEl.style) return;
+    if (chipEl.style[prop] !== value) {
+      chipEl.style[prop] = value;
+      chipDomWriteCount += 1;
+    }
+  }
+
+  function chipWriteText_(text, title) {
+    if (!chipEl) return;
+    if (chipEl.textContent !== text) {
+      chipEl.textContent = text;
+      chipDomWriteCount += 1;
+    }
+    var t = title == null ? "" : String(title);
+    if (chipEl.title !== t) {
+      chipEl.title = t;
+      chipDomWriteCount += 1;
+    }
+  }
+
+  function chipWriteCompact_(compact) {
+    if (!chipEl || !chipEl.classList) return;
+    var has = chipEl.classList.contains("mrj-auth-chip-compact");
+    if (compact === has) return;
+    chipEl.classList.toggle("mrj-auth-chip-compact", compact);
+    chipDomWriteCount += 1;
+  }
+
+  function chipWriteAriaLabel_(label) {
+    if (!chipEl) return;
+    var cur = chipEl.getAttribute("aria-label") || "";
+    if (cur === label) return;
+    chipEl.setAttribute("aria-label", label);
+    chipDomWriteCount += 1;
+  }
+
+  function computeChipCollisionMarginTop_() {
+    var obstacles = collectChipObstacles_();
+    var maxIter = 24;
+    var extraTop = 0;
+    while (maxIter-- > 0) {
+      chipEl.style.marginTop = extraTop > 0 ? extraTop + "px" : "";
+      var chipRect = chipEl.getBoundingClientRect();
+      if (!chipRect || !chipRect.width) break;
+      var bump = 0;
+      for (var j = 0; j < obstacles.length; j++) {
+        var or = obstacles[j].getBoundingClientRect();
+        if (!or || !or.width) continue;
+        if (or.top > chipRect.bottom + 40) continue;
+        if (rectsOverlap_(chipRect, or)) {
+          var need = or.bottom - chipRect.top + 6;
+          if (need > bump) bump = need;
         }
-        if (bump <= 0) break;
-        extraTop += bump;
-        chipEl.style.marginTop = extraTop + "px";
       }
-    } catch (ignore) {}
+      if (bump <= 0) break;
+      extraTop += bump;
+    }
+    return extraTop > 0 ? extraTop + "px" : "";
+  }
+
+  function applyChipLayout_() {
+    if (!chipEl || chipEl.hidden || !global.document) return;
+    chipLayoutRunCount += 1;
+    muteChipObserver_(function () {
+      try {
+        var vw = global.innerWidth || 800;
+        var compact = vw < 480;
+        var offsets = chipOffsetStyles_();
+        var baseTop = offsets.top
+          ? offsets.top
+          : "calc(0.55rem + env(safe-area-inset-top, 0px))";
+        var baseRight = offsets.right
+          ? offsets.right
+          : "calc(0.55rem + env(safe-area-inset-right, 0px))";
+        var displayId = state.id || "";
+        var text =
+          compact && displayId.length > 10 ? displayId.slice(0, 8) + "\u2026" : displayId;
+        var title = compact && displayId.length > 10 ? displayId : "";
+        var ariaLabel = "My scores for " + displayId;
+
+        chipWriteStyle_("top", baseTop);
+        chipWriteStyle_("right", baseRight);
+        chipWriteStyle_("marginRight", "");
+        chipWriteStyle_("marginTop", "");
+        chipWriteText_(text, title);
+        chipWriteCompact_(compact);
+        chipWriteAriaLabel_(ariaLabel);
+
+        var marginTop = computeChipCollisionMarginTop_();
+        chipWriteStyle_("marginTop", marginTop);
+
+        chipApplied_.compact = compact;
+        chipApplied_.top = baseTop;
+        chipApplied_.right = baseRight;
+        chipApplied_.marginTop = marginTop;
+        chipApplied_.marginRight = "";
+        chipApplied_.text = text;
+        chipApplied_.title = title;
+        chipApplied_.ariaLabel = ariaLabel;
+      } catch (ignore) {}
+    });
+  }
+
+  function adjustChipPosition_() {
+    applyChipLayout_();
   }
 
   function isElementVisible_(node) {
@@ -1542,6 +1687,25 @@
     } catch (ignore) {
       return false;
     }
+  }
+
+  function findOwnRecord_() {
+    if (!global.document) return null;
+    var node = null;
+    if (global.document.querySelector) {
+      node = global.document.querySelector("[data-mrj-own-record]");
+    }
+    if ((!node || !isElementVisible_(node)) && global.document.querySelectorAll) {
+      var nodes = global.document.querySelectorAll("[data-mrj-own-record]");
+      for (var o = 0; o < nodes.length; o++) {
+        if (isElementVisible_(nodes[o])) {
+          node = nodes[o];
+          break;
+        }
+      }
+    }
+    if (!node || !isElementVisible_(node)) return null;
+    return node;
   }
 
   function findNamePill_() {
@@ -1578,15 +1742,31 @@
     return pill;
   }
 
+  function syncPillLabel_(pill) {
+    if (!pill) return;
+    var label = "My scores for " + (state.id || "");
+    muteChipObserver_(function () {
+      var cur = pill.getAttribute("aria-label") || "";
+      if (cur !== label) pill.setAttribute("aria-label", label);
+      if (pill.title !== label) pill.title = label;
+    });
+  }
+
   function wireNamePill_(pill) {
-    if (!pill || pill.getAttribute("data-mrj-pill-wired") === "1") return;
-    pill.setAttribute("data-mrj-pill-wired", "1");
-    pill.setAttribute("role", "button");
-    pill.setAttribute("tabindex", "0");
-    try {
-      pill.style.cursor = "pointer";
-    } catch (ignore) {}
-    pill.setAttribute("aria-label", "My scores for " + (state.id || ""));
+    if (!pill) return;
+    if (pill.getAttribute("data-mrj-pill-wired") === "1") {
+      syncPillLabel_(pill);
+      return;
+    }
+    muteChipObserver_(function () {
+      pill.setAttribute("data-mrj-pill-wired", "1");
+      pill.setAttribute("role", "button");
+      pill.setAttribute("tabindex", "0");
+      try {
+        if (pill.style.cursor !== "pointer") pill.style.cursor = "pointer";
+      } catch (ignore) {}
+      syncPillLabel_(pill);
+    });
     pill.addEventListener("click", function () {
       try {
         openProgressPanel();
@@ -1617,8 +1797,8 @@
       });
       global.document.body.appendChild(chipEl);
       if (global.addEventListener) {
-        global.addEventListener("resize", function () { scheduleChipLayout_(); });
-        global.addEventListener("orientationchange", function () { scheduleChipLayout_(); });
+        global.addEventListener("resize", function () { scheduleStudentChrome_(); });
+        global.addEventListener("orientationchange", function () { scheduleStudentChrome_(); });
       }
     }
     if (!panelRootEl) {
@@ -1630,32 +1810,47 @@
     }
   }
 
-  function updateStudentChip_() {
+  function setChipHidden_(hidden) {
+    if (!chipEl) return;
+    if (!!chipEl.hidden === !!hidden) return;
+    muteChipObserver_(function () {
+      chipEl.hidden = hidden;
+    });
+  }
+
+  function applyStudentChrome_() {
     try {
       if (!global.document || !global.document.body) return;
       ensureChipDom_();
       if (!state.id) {
-        if (chipEl) chipEl.hidden = true;
+        setChipHidden_(true);
         return;
       }
       installChipObserver_();
+      if (findOwnRecord_()) {
+        setChipHidden_(true);
+        return;
+      }
       if (!chipDisabled_()) {
         var pill = findNamePill_();
         if (pill) {
-          if (chipEl && !chipEl.hidden) chipEl.hidden = true;
+          setChipHidden_(true);
           wireNamePill_(pill);
           return;
         }
       }
       if (chipDisabled_()) {
-        if (chipEl) chipEl.hidden = true;
+        setChipHidden_(true);
         return;
       }
-      chipEl.hidden = false;
-      chipEl.setAttribute("aria-label", "My scores for " + state.id);
-      installChipObserver_();
-      adjustChipPosition_();
+      setChipHidden_(false);
+      installChipIdleMutationWatcher_();
+      applyChipLayout_();
     } catch (ignore) {}
+  }
+
+  function updateStudentChip_() {
+    applyStudentChrome_();
   }
 
   function panelShell_(titleText) {
@@ -1912,7 +2107,25 @@
       chipTrailingPending: function () {
         return !!chipLayoutTrailingTimer;
       },
+      applyStudentChrome: applyStudentChrome_,
       findNamePill: findNamePill_,
+      findOwnRecord: findOwnRecord_,
+      resetChipIdleMetrics: function () {
+        chipLayoutRunCount = 0;
+        chipObserverNotifyCount = 0;
+        chipObserverIgnoredCount = 0;
+        chipDomWriteCount = 0;
+        chipIdleMutationCount = 0;
+      },
+      getChipIdleMetrics: function () {
+        return {
+          layoutRuns: chipLayoutRunCount,
+          observerNotifies: chipObserverNotifyCount,
+          observerIgnored: chipObserverIgnoredCount,
+          domWrites: chipDomWriteCount,
+          chipMutations: chipIdleMutationCount
+        };
+      },
       REQUEST_TIMEOUT_MS: REQUEST_TIMEOUT_MS,
       AUTH_VERSION: AUTH_VERSION,
       APP_SCORE_PROGRAM_MAP: APP_SCORE_PROGRAM_MAP,

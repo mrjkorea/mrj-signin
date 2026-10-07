@@ -135,6 +135,9 @@ function loadMrjAuth(fetchImpl, session, timeoutMs) {
         if (sel.indexOf("mrj-name-pill") !== -1 && c.attributes && c.attributes["data-mrj-name-pill"]) {
           out.push(c);
         }
+        if (sel.indexOf("mrj-own-record") !== -1 && c.attributes && c.attributes["data-mrj-own-record"]) {
+          out.push(c);
+        }
         walk(c);
       });
     })(body);
@@ -176,6 +179,9 @@ function loadMrjAuth(fetchImpl, session, timeoutMs) {
         }
         if (sel && sel.indexOf("mrj-name-pill") !== -1) {
           return body.children.find((c) => c.attributes && c.attributes["data-mrj-name-pill"]) || null;
+        }
+        if (sel && sel.indexOf("mrj-own-record") !== -1) {
+          return body.children.find((c) => c.attributes && c.attributes["data-mrj-own-record"]) || null;
         }
         if (sel.startsWith("script")) return null;
         return null;
