@@ -12,7 +12,7 @@ const DECODABLE_FIXTURE = "/test/fixtures/chip-body-slot/decodable-library.html"
 const DAY3_FIXTURE = "/test/fixtures/chip-body-slot/day3-workbook-phone.html";
 const LEAP_FROG_HUD_FIXTURE = "/test/fixtures/chip-body-slot/leap-frog-hud-phone.html";
 
-async function openSignedIn(page, server, fixturePath, width, height, waitGrid) {
+async function openSignedIn(page, server, fixturePath, width, height, waitGrid, skipChipLayout) {
   await page.setViewportSize({ width, height });
   await installChipIdleRoutes(page, ROOT);
   await page.goto(server.baseUrl + fixturePath, { waitUntil: "domcontentloaded" });
@@ -24,6 +24,7 @@ async function openSignedIn(page, server, fixturePath, width, height, waitGrid) 
     await page.waitForSelector(".book-grid.ready", { timeout: 15000 });
   }
   await page.waitForTimeout(waitGrid ? 1200 : 800);
+  if (skipChipLayout) return;
   await page.evaluate(() => {
     window.dispatchEvent(new Event("resize"));
     window.MRJ_AUTH._test.scheduleChipLayout();
@@ -90,7 +91,33 @@ describe("chip marginTop collision", () => {
     const browser = await chromium.launch();
     try {
       const page = await browser.newPage();
-      await openSignedIn(page, server, LEAP_FROG_HUD_FIXTURE, 390, 844, false);
+      await openSignedIn(page, server, LEAP_FROG_HUD_FIXTURE, 390, 844, false, true);
+      const atBase = await page.evaluate(() => {
+        const chip = document.getElementById("mrj-auth-student-chip");
+        chip.hidden = false;
+        chip.style.marginTop = "";
+        const cr = chip.getBoundingClientRect();
+        const hud = document.getElementById("lf-left");
+        const hr = hud.getBoundingClientRect();
+        const overlapsHud =
+          cr.left < hr.right && cr.right > hr.left && cr.top < hr.bottom && cr.bottom > hr.top;
+        return {
+          marginTop: parseFloat(chip.style.marginTop) || 0,
+          overlapsHud,
+          chipLeft: cr.left,
+          hudRight: hr.right
+        };
+      });
+      console.log("LEAP_FROG_HUD_390_BASE", JSON.stringify(atBase));
+      assert.equal(atBase.marginTop, 0);
+      assert.equal(atBase.overlapsHud, true, "HUD must overlap chip at base margin");
+
+      await page.evaluate(() => {
+        window.dispatchEvent(new Event("resize"));
+        window.MRJ_AUTH._test.scheduleChipLayout();
+      });
+      await page.waitForTimeout(600);
+
       const state = await readChipStateWithHud(page);
       console.log("LEAP_FROG_HUD_390", JSON.stringify(state));
       assert.equal(state.hidden, false);

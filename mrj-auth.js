@@ -1737,6 +1737,8 @@
         hide: false
       };
     }
+    // Phone cap (100px) may be exceeded in the walk; keep the last control-clear
+    // margin from the loop (e.g. Ski Jump two-row score bar ~151px) instead of hiding.
     if ((overCap || extraTop > maxMarginPx) && lastControlClearMargin != null) {
       return {
         marginTop: lastControlClearMargin > 0 ? lastControlClearMargin + "px" : "",
