@@ -121,7 +121,11 @@
   var PROGRESS_MAX_PAGES = 40;
   var PROGRESS_PANEL_MAX_PAGES = 40;
   var DAY2_PACK_ITEM_RE = /^(basic_[abc]|int[23][abc])_u\d+:/;
-  var DECODABLE_41_ITEM_RE = /^mlr_dec_(04[1-9]|0[5-6]\d|070):/;
+  var DECODABLE_TRY_ITEM_RE = /^mlr_dec_0(0[1-9]|1\d|20):/;
+  var DECODABLE_21_ITEM_RE = /^mlr_dec_0(2[1-9]|3\d|40):/;
+  var DECODABLE_41_ITEM_RE = /^mlr_dec_0(4[1-9]|5\d|60):/;
+  var DECODABLE_61_ITEM_RE = /^mlr_dec_0(6[1-9]|7\d|80):/;
+  var DECODABLE_81_ITEM_RE = /^mlr_dec_(08[1-9]|09\d|100):/;
   var DECODABLE_71_ITEM_RE = /^mlr_dec_(07[1-9]|0[89]\d|100):/;
   var WHISTLE_ITEM_RE = /^whistle:/;
   var APP_SCORE_PROGRAM_MAP = {
@@ -139,7 +143,11 @@
     "mrj-zap-grammar-books": ["greenzap"],
     "pronounce": ["pronounce"],
     "pronounce-whistle": ["pronounce"],
+    "mrj-decodable-try": ["decodable"],
+    "mrj-decodable-try-21": ["decodable"],
     "mrj-decodable-try-41": ["decodable"],
+    "mrj-decodable-try-61": ["decodable"],
+    "mrj-decodable-try-81": ["decodable"],
     "mrj-decodable-try-71": ["decodable"],
     "news-words": ["news-words"]
   };
@@ -421,8 +429,16 @@
       if (!WHISTLE_ITEM_RE.test(itemId)) return false;
     } else if (key === "pronounce") {
       if (WHISTLE_ITEM_RE.test(itemId)) return false;
+    } else if (key === "mrj-decodable-try") {
+      if (!DECODABLE_TRY_ITEM_RE.test(itemId)) return false;
+    } else if (key === "mrj-decodable-try-21") {
+      if (!DECODABLE_21_ITEM_RE.test(itemId)) return false;
     } else if (key === "mrj-decodable-try-41") {
       if (!DECODABLE_41_ITEM_RE.test(itemId)) return false;
+    } else if (key === "mrj-decodable-try-61") {
+      if (!DECODABLE_61_ITEM_RE.test(itemId)) return false;
+    } else if (key === "mrj-decodable-try-81") {
+      if (!DECODABLE_81_ITEM_RE.test(itemId)) return false;
     } else if (key === "mrj-decodable-try-71") {
       if (!DECODABLE_71_ITEM_RE.test(itemId)) return false;
     }
@@ -1622,6 +1638,104 @@
     }
   }
 
+  function chipMarginLandingClear_(chipRect) {
+    if (!chipMarginTopFitsViewport_(chipRect)) return false;
+    var validationTargets = collectChipMarginValidationTargets_();
+    for (var v = 0; v < validationTargets.length; v++) {
+      if (chipMarginTopOverlapsTarget_(chipRect, validationTargets[v])) return false;
+    }
+    return true;
+  }
+
+  function chipMarginBumpForOverlaps_(chipRect, compact) {
+    var bump = 0;
+    var controlObs = collectChipObstacles_();
+    for (var c = 0; c < controlObs.length; c++) {
+      var cor = controlObs[c].getBoundingClientRect();
+      if (!cor || !cor.width) continue;
+      if (rectsOverlap_(chipRect, cor)) {
+        var cneed = cor.bottom - chipRect.top + 6;
+        if (cneed > bump) bump = cneed;
+      }
+    }
+    if (!compact || chipBodySlotPx_ === 0) {
+      var textObs = collectChipTextObstacles_(compact);
+      for (var t = 0; t < textObs.length; t++) {
+        var tor = textObs[t].getBoundingClientRect();
+        if (!tor || !tor.width) continue;
+        if (!verticalOverlapChip_(chipRect, tor)) continue;
+        if (compact && !obstacleOverlapsChipColumn_(chipRect, tor)) continue;
+        if (rectsOverlap_(chipRect, tor)) {
+          var tneed = tor.bottom - chipRect.top + 6;
+          if (tneed > bump) bump = tneed;
+        }
+      }
+    }
+    return bump;
+  }
+
+  function chipLayoutAllowed_() {
+    if (!chipEl || !global.document || !state.id) return false;
+    if (findOwnRecord_()) return false;
+    if (!chipDisabled_() && findNamePill_()) return false;
+    if (chipDisabled_()) return false;
+    return true;
+  }
+
+  function computeChipMarginLayout_(compact) {
+    var anchorRect = chipLayoutRectWithMargin_(0);
+    if (!anchorRect || !anchorRect.width) {
+      return { marginTop: "", hide: false };
+    }
+    var maxMarginPx = compact ? 100 : 64;
+    var extraTop = 0;
+    var maxIter = 16;
+    var overCap = false;
+    var lastClearMargin = null;
+    var baseRect = chipLayoutRectWithMargin_(0);
+    if (chipMarginLandingClear_(baseRect)) {
+      return { marginTop: "", hide: false };
+    }
+    while (maxIter-- > 0) {
+      var trialRect = chipLayoutRectWithMargin_(extraTop);
+      if (chipMarginLandingClear_(trialRect) && chipMarginTopFitsViewport_(trialRect)) {
+        lastClearMargin = extraTop;
+      }
+      var bump = chipMarginBumpForOverlaps_(trialRect, compact);
+      if (bump <= 0) break;
+      extraTop += bump;
+      if (extraTop > maxMarginPx) {
+        overCap = true;
+        break;
+      }
+      trialRect = chipLayoutRectWithMargin_(extraTop);
+      if (!chipMarginTopFitsViewport_(trialRect)) {
+        overCap = true;
+        break;
+      }
+    }
+    if (lastClearMargin != null) {
+      return {
+        marginTop: lastClearMargin > 0 ? lastClearMargin + "px" : "",
+        hide: false
+      };
+    }
+    if (overCap || extraTop > maxMarginPx) {
+      if (!chipMarginLandingClear_(baseRect)) {
+        return { marginTop: "", hide: true };
+      }
+      return { marginTop: "", hide: false };
+    }
+    var finalRect = chipLayoutRectWithMargin_(extraTop);
+    if (chipMarginLandingClear_(finalRect)) {
+      return { marginTop: extraTop > 0 ? extraTop + "px" : "", hide: false };
+    }
+    if (!chipMarginLandingClear_(baseRect)) {
+      return { marginTop: "", hide: true };
+    }
+    return { marginTop: "", hide: false };
+  }
+
   function chipMarginTopFitsViewport_(chipRect) {
     if (!chipRect) return false;
     var vh = global.innerHeight || 800;
@@ -1904,66 +2018,11 @@
   }
 
   function computeChipCollisionMarginTop_(compact) {
-    var controlObs = collectChipObstacles_();
-    var anchorRect = chipLayoutRectWithMargin_(0);
-    if (!anchorRect || !anchorRect.width) return "";
-    var maxMarginPx = compact ? 100 : 64;
-    var maxIter = 8;
-    var extraTop = 0;
-    while (maxIter-- > 0) {
-      var chipRect = chipLayoutRectWithMargin_(extraTop);
-      if (!chipRect || !chipRect.width) break;
-      var bandLimit = chipRect.bottom + 24;
-      var bump = 0;
-      for (var c = 0; c < controlObs.length; c++) {
-        var cor = controlObs[c].getBoundingClientRect();
-        if (!cor || !cor.width) continue;
-        if (cor.top > bandLimit) continue;
-        if (cor.bottom < anchorRect.top - 4) continue;
-        if (rectsOverlap_(chipRect, cor)) {
-          var cneed = cor.bottom - chipRect.top + 6;
-          if (cneed > bump) bump = cneed;
-        }
-      }
-      if (!compact || chipBodySlotPx_ === 0) {
-        var textObs = collectChipTextObstacles_(compact);
-        for (var t = 0; t < textObs.length; t++) {
-          var tor = textObs[t].getBoundingClientRect();
-          if (!tor || !tor.width) continue;
-          if (tor.top > bandLimit) continue;
-          if (tor.bottom < anchorRect.top - 4) continue;
-          if (!verticalOverlapChip_(chipRect, tor)) continue;
-          if (compact && !obstacleOverlapsChipColumn_(anchorRect, tor)) continue;
-          if (rectsOverlap_(chipRect, tor)) {
-            var tneed = tor.bottom - chipRect.top + 6;
-            if (tneed > bump) bump = tneed;
-          }
-        }
-      }
-      if (bump <= 0) break;
-      extraTop += bump;
-      if (extraTop > maxMarginPx) {
-        extraTop = 0;
-        break;
-      }
-      var trialRect = chipLayoutRectWithMargin_(extraTop);
-      if (!chipMarginTopFitsViewport_(trialRect)) {
-        extraTop = 0;
-        break;
-      }
-    }
-    if (extraTop <= 0 || extraTop > maxMarginPx) return "";
-    var finalRect = chipLayoutRectWithMargin_(extraTop);
-    if (!chipMarginTopFitsViewport_(finalRect)) return "";
-    var validationTargets = collectChipMarginValidationTargets_();
-    for (var v = 0; v < validationTargets.length; v++) {
-      if (chipMarginTopOverlapsTarget_(finalRect, validationTargets[v])) return "";
-    }
-    return extraTop + "px";
+    return computeChipMarginLayout_(compact).marginTop;
   }
 
   function applyChipLayout_() {
-    if (!chipEl || chipEl.hidden || !global.document) return;
+    if (!chipLayoutAllowed_()) return;
     chipLayoutRunCount += 1;
     try {
       var vw = global.innerWidth || 800;
@@ -1995,13 +2054,27 @@
         applyChipBodySlot_(0);
       }
 
-      var marginTop = computeChipCollisionMarginTop_(compact);
-      chipWriteStyle_("marginTop", marginTop);
+      var marginLayout = computeChipMarginLayout_(compact);
+      if (marginLayout.hide) {
+        chipWriteStyle_("marginTop", "");
+        setChipHidden_(true);
+        chipApplied_.compact = compact;
+        chipApplied_.top = baseTop;
+        chipApplied_.right = baseRight;
+        chipApplied_.marginTop = "";
+        chipApplied_.marginRight = "";
+        chipApplied_.text = text;
+        chipApplied_.title = title;
+        chipApplied_.ariaLabel = ariaLabel;
+        return;
+      }
+      setChipHidden_(false);
+      chipWriteStyle_("marginTop", marginLayout.marginTop);
 
       chipApplied_.compact = compact;
       chipApplied_.top = baseTop;
       chipApplied_.right = baseRight;
-      chipApplied_.marginTop = marginTop;
+      chipApplied_.marginTop = marginLayout.marginTop;
       chipApplied_.marginRight = "";
       chipApplied_.text = text;
       chipApplied_.title = title;
@@ -2467,6 +2540,9 @@
       },
       getChipBodySlotPx: function () {
         return chipBodySlotPx_;
+      },
+      computeChipMarginLayout: function (compact) {
+        return computeChipMarginLayout_(compact);
       },
       REQUEST_TIMEOUT_MS: REQUEST_TIMEOUT_MS,
       AUTH_VERSION: AUTH_VERSION,

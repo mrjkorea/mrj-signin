@@ -80,23 +80,57 @@ describe("panel filters and fetch", () => {
     assert.equal(auth._test.panelAppKey(), "pronounce-whistle");
   });
 
-  it("decodable try-41 and try-71 only allow mlr_dec book ranges", () => {
+  it("decodable app keys only allow their mlr_dec book ranges", () => {
     const { auth, root } = loadMrjAuth(() => jsonResponse({ ok: false }));
-    auth.mount(root, { app: "mrj-decodable-try-41" });
-    assert.equal(auth._test.rowPassesItemFilter({ program: "decodable", item_id: "listen" }), false);
-    assert.equal(
-      auth._test.rowPassesItemFilter({ program: "decodable", item_id: "mlr_dec_041:listen" }),
-      true
-    );
-    assert.equal(
-      auth._test.rowPassesItemFilter({ program: "decodable", item_id: "mlr_dec_071:read" }),
-      false
-    );
-    auth.mount(root, { app: "mrj-decodable-try-71" });
-    assert.equal(
-      auth._test.rowPassesItemFilter({ program: "decodable", item_id: "mlr_dec_071:read" }),
-      true
-    );
+    const cases = [
+      {
+        app: "mrj-decodable-try",
+        allow: "mlr_dec_012:listen",
+        deny: "mlr_dec_021:listen"
+      },
+      {
+        app: "mrj-decodable-try-21",
+        allow: "mlr_dec_025:read",
+        deny: "mlr_dec_012:listen"
+      },
+      {
+        app: "mrj-decodable-try-41",
+        allow: "mlr_dec_045:listen",
+        deny: "mlr_dec_061:listen"
+      },
+      {
+        app: "mrj-decodable-try-61",
+        allow: "mlr_dec_070:read",
+        deny: "mlr_dec_081:read"
+      },
+      {
+        app: "mrj-decodable-try-81",
+        allow: "mlr_dec_090:read",
+        deny: "mlr_dec_071:read"
+      },
+      {
+        app: "mrj-decodable-try-71",
+        allow: "mlr_dec_071:read",
+        deny: "mlr_dec_041:listen"
+      }
+    ];
+    for (const c of cases) {
+      auth.mount(root, { app: c.app });
+      assert.equal(
+        auth._test.rowPassesItemFilter({ program: "decodable", item_id: c.allow }),
+        true,
+        c.app + " allow " + c.allow
+      );
+      assert.equal(
+        auth._test.rowPassesItemFilter({ program: "decodable", item_id: c.deny }),
+        false,
+        c.app + " deny " + c.deny
+      );
+    }
+    auth.mount(root, { app: "mrj-decodable-try" });
+    const decodablePrograms = auth._test.scoreProgramsForApp();
+    assert.equal(decodablePrograms.length, 1);
+    assert.equal(decodablePrograms[0], "decodable");
   });
 
   it("fetches each mapped program separately", async () => {
