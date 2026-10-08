@@ -2,11 +2,18 @@
  * The only way a student web app starts the shared door.
  * Load mrj-auth.js before this file. This file does not sign anyone in.
  * data-mrj-app on this script tag names the app. Missing or blank falls back to "mrj".
+ * data-mrj-score-programs="a,b" overrides score program names for the My scores panel.
+ * data-mrj-panel-app overrides panel routing (e.g. pronounce-whistle).
+ * data-mrj-item-include / data-mrj-item-exclude are regex strings for item_id filters.
+ * data-mrj-chip="off" hides the fixed name chip.
+ * data-mrj-chip-top / data-mrj-chip-right set fixed offsets for the chip.
  */
 (function () {
   "use strict";
 
+  var BOOT_VERSION = "20261007-progress-1.4.2";
   var APP = readApp_();
+  var SCORE_PROGRAMS = readAttr_("data-mrj-score-programs");
   var OLD_SELECTOR = "#signin-card, #screen-name, .signin-screen, #btn-signin-skip, #signin-local";
 
   function readApp_() {
@@ -16,6 +23,27 @@
     if (value == null) return "mrj";
     value = String(value).trim();
     return value ? value : "mrj";
+  }
+
+  function readAttr_(name) {
+    var script = document.currentScript;
+    if (script && script.getAttribute) {
+      var v = script.getAttribute(name);
+      if (v != null && String(v).trim()) return String(v).trim();
+    }
+    try {
+      if (String(document.documentElement.getAttribute(name) || "").trim()) {
+        return String(document.documentElement.getAttribute(name)).trim();
+      }
+      if (document.body && String(document.body.getAttribute(name) || "").trim()) {
+        return String(document.body.getAttribute(name)).trim();
+      }
+    } catch (ignore) {}
+    return "";
+  }
+
+  function readChipOff_() {
+    return String(readAttr_("data-mrj-chip")).trim().toLowerCase() === "off";
   }
 
   function stripOldDoors(root) {
@@ -50,7 +78,7 @@
     if (!node || node.nodeType !== 1) return false;
     if (node.id === "mrj-auth-gate" || (node.closest && node.closest("#mrj-auth-gate, .mrj-auth"))) return false;
     var text = node.textContent || "";
-    if (text.indexOf("What's your name") !== -1 || text.indexOf("What’s your name") !== -1) return true;
+    if (text.indexOf("What's your name") !== -1 || text.indexOf("What\u2019s your name") !== -1) return true;
     return !!(node.querySelector && node.querySelector("#lf-input"));
   }
 
@@ -105,7 +133,17 @@
       gate.textContent = "Sign-in book did not load.";
       return;
     }
-    window.MRJ_AUTH.mount(gate, { app: APP, onReady: onReady });
+    window.MRJ_AUTH.mount(gate, {
+      app: APP,
+      scorePrograms: SCORE_PROGRAMS,
+      chipOff: readChipOff_(),
+      panelApp: readAttr_("data-mrj-panel-app"),
+      itemInclude: readAttr_("data-mrj-item-include"),
+      itemExclude: readAttr_("data-mrj-item-exclude"),
+      chipTop: readAttr_("data-mrj-chip-top"),
+      chipRight: readAttr_("data-mrj-chip-right"),
+      onReady: onReady
+    });
   }
 
   if (document.readyState === "loading") {
@@ -113,4 +151,6 @@
   } else {
     start();
   }
+
+  window.MRJ_AUTH_BOOT_VERSION = BOOT_VERSION;
 })();

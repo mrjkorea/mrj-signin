@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>chip idle own record</title>
+    <link rel="stylesheet" href="/mrj-auth.css" />
+  </head>
+  <body>
+    <main style="padding: 1rem">
+      <button type="button" id="btn-student-name" data-mrj-own-record>DemoKid</button>
+    </main>
+    <script>
+      globalThis.MRJ_AUTH_TEST_MODE = true;
+    </script>
+    <script src="/mrj-auth.js"></script>
+    <script src="/mrj-auth-boot.js" data-mrj-app="chip-idle-own-record"></script>
+  </body>
+</html>

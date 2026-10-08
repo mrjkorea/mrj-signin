@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>phone title overlap</title>
+    <link rel="stylesheet" href="/mrj-auth.css" />
+    <style>
+      body {
+        margin: 0;
+        font-family: system-ui, sans-serif;
+      }
+      .page-title {
+        margin: 0;
+        padding: 0.55rem 0.75rem;
+        font-size: 1.35rem;
+        line-height: 1.25;
+        width: 100%;
+        box-sizing: border-box;
+      }
+    </style>
+  </head>
+  <body>
+    <h1 class="page-title">Pick a unit</h1>
+    <script>
+      globalThis.MRJ_AUTH_TEST_MODE = true;
+    </script>
+    <script src="/mrj-auth.js"></script>
+    <script src="/mrj-auth-boot.js" data-mrj-app="chip-idle-overlap"></script>
+  </body>
+</html>

@@ -7,7 +7,7 @@
 (function (global) {
   "use strict";
 
-  var AUTH_VERSION = "20261007-progress-1.4.1";
+  var AUTH_VERSION = "20261007-progress-1.4.2";
   var ENDPOINT = "https://script.google.com/macros/s/AKfycbwtJTUO3gbcMrlAwsn1feWxyp7Rw2cxpfe1bOT9v2rxmQHa2Tlc6pFNWAjU6ZAdlD6kFQ/exec";
   var SESSION_KEY = "mrj.auth.session";
   var REQUEST_TIMEOUT_MS = 30000;
@@ -119,8 +119,71 @@
   var packState = {};
   var PROGRESS_PAGE_SIZE = 500;
   var PROGRESS_MAX_PAGES = 40;
+  var PROGRESS_PANEL_MAX_PAGES = 40;
+  var DAY2_PACK_ITEM_RE = /^(basic_[abc]|int[23][abc])_u\d+:/;
+  var DECODABLE_TRY_ITEM_RE = /^mlr_dec_0(0[1-9]|1\d|20):/;
+  var DECODABLE_21_ITEM_RE = /^mlr_dec_0(2[1-9]|3\d|40):/;
+  var DECODABLE_41_ITEM_RE = /^mlr_dec_0(4[1-9]|5\d|60):/;
+  var DECODABLE_61_ITEM_RE = /^mlr_dec_0(6[1-9]|7\d|80):/;
+  var DECODABLE_81_ITEM_RE = /^mlr_dec_(08[1-9]|09\d|100):/;
+  var DECODABLE_71_ITEM_RE = /^mlr_dec_(07[1-9]|0[89]\d|100):/;
+  var WHISTLE_ITEM_RE = /^whistle:/;
+  var APP_SCORE_PROGRAM_MAP = {
+    "word-master": ["word-master"],
+    "day2-words": ["day2-words", "word-master"],
+    "day3-workbook": ["day3-workbook", "conversation"],
+    "day4-speak": ["day4-speak"],
+    "day5-practice": ["day5-practice"],
+    "day6-talk": ["day6-talk"],
+    "leap-frog": ["leap-frog"],
+    "ski-jump": ["ski-jump"],
+    "firefighter-spelling": ["firefighter-spelling"],
+    "typing-kids": ["typing-kids"],
+    "skill-builder-g1": ["skill-builder-g1"],
+    "mrj-zap-grammar-books": ["greenzap"],
+    "pronounce": ["pronounce"],
+    "pronounce-whistle": ["pronounce"],
+    "mrj-decodable-try": ["decodable"],
+    "mrj-decodable-try-21": ["decodable"],
+    "mrj-decodable-try-41": ["decodable"],
+    "mrj-decodable-try-61": ["decodable"],
+    "mrj-decodable-try-81": ["decodable"],
+    "mrj-decodable-try-71": ["decodable"],
+    "news-words": ["news-words"]
+  };
   var viewGen = 0;
   var sessionGen = 0;
+  var chipEl = null;
+  var panelRootEl = null;
+  var panelBodyEl = null;
+  var panelFetchGen = 0;
+  var panelOpen = false;
+  var panelKeyHandler = null;
+  var panelRowsProvider = null;
+  var chipMutationObserver = null;
+  var chipLayoutLastRun = 0;
+  var chipLayoutTrailingTimer = null;
+  var chipChromeTimer = null;
+  var chipLayoutRunCount = 0;
+  var chipObserverNotifyCount = 0;
+  var chipObserverIgnoredCount = 0;
+  var chipDomWriteCount = 0;
+  var chipIdleMutationCount = 0;
+  var chipIdleMutationObserver = null;
+  var chipBodySlotPx_ = 0;
+  var CHIP_BODY_SLOT_MAX_PX_ = 44;
+  var CHIP_BODY_SLOT_HYSTERESIS_PX_ = 2;
+  var chipApplied_ = {
+    compact: null,
+    top: "",
+    right: "",
+    marginTop: "",
+    marginRight: "",
+    text: "",
+    title: "",
+    ariaLabel: ""
+  };
+  var loadPlaceSeq = 0;
   var busy = false;
   var loginFlightSeq = 0;
   var activeLoginFlight = null;
@@ -248,6 +311,261 @@
     return "";
   }
 
+  function appKey_() {
+    return String(appProgram_() || "").trim().toLowerCase();
+  }
+
+  function chipDisabled_() {
+    try {
+      if (options && options.chipOff === true) return true;
+      var doc = global.document;
+      if (!doc || !doc.documentElement) return false;
+      var script = doc.currentScript;
+      if (script && script.getAttribute && String(script.getAttribute("data-mrj-chip") || "").trim().toLowerCase() === "off") {
+        return true;
+      }
+      var boot = doc.querySelector && doc.querySelector("script[data-mrj-app][src*='mrj-auth-boot']");
+      if (boot && String(boot.getAttribute("data-mrj-chip") || "").trim().toLowerCase() === "off") {
+        return true;
+      }
+      if (String(doc.documentElement.getAttribute("data-mrj-chip") || "").trim().toLowerCase() === "off") {
+        return true;
+      }
+      if (doc.body && String(doc.body.getAttribute("data-mrj-chip") || "").trim().toLowerCase() === "off") {
+        return true;
+      }
+    } catch (ignore) {}
+    return false;
+  }
+
+  function readBootAttr_(name) {
+    try {
+      var doc = global.document;
+      if (!doc) return "";
+      if (options && options.bootAttrs && options.bootAttrs[name]) {
+        return String(options.bootAttrs[name]);
+      }
+      var boot = doc.querySelector && doc.querySelector("script[data-mrj-app][src*='mrj-auth-boot']");
+      if (boot && boot.getAttribute) {
+        var v = boot.getAttribute(name);
+        if (v != null && String(v).trim()) return String(v).trim();
+      }
+      if (doc.documentElement && doc.documentElement.getAttribute) {
+        var hv = doc.documentElement.getAttribute(name);
+        if (hv != null && String(hv).trim()) return String(hv).trim();
+      }
+      if (doc.body && doc.body.getAttribute) {
+        var bv = doc.body.getAttribute(name);
+        if (bv != null && String(bv).trim()) return String(bv).trim();
+      }
+    } catch (ignore) {}
+    return "";
+  }
+
+  function panelAppKey_() {
+    var override = (options && options.panelApp) || readBootAttr_("data-mrj-panel-app");
+    if (override && String(override).trim()) {
+      return String(override).trim().toLowerCase();
+    }
+    var key = appKey_();
+    if (key === "pronounce") {
+      try {
+        var path = global.location && global.location.pathname ? String(global.location.pathname) : "";
+        if (path.indexOf("/pronounce-whistle/") !== -1) return "pronounce-whistle";
+      } catch (ignore) {}
+    }
+    return key;
+  }
+
+  function scoreProgramsForApp_() {
+    var override = options && options.scorePrograms;
+    if (override != null && String(override).trim()) {
+      return String(override)
+        .split(",")
+        .map(function (s) { return String(s).trim(); })
+        .filter(Boolean);
+    }
+    var key = panelAppKey_();
+    if (key && APP_SCORE_PROGRAM_MAP[key]) {
+      return APP_SCORE_PROGRAM_MAP[key].slice();
+    }
+    if (key && APP_SCORE_PROGRAM_MAP[appKey_()]) {
+      return APP_SCORE_PROGRAM_MAP[appKey_()].slice();
+    }
+    if (key) return [key];
+    return [];
+  }
+
+  function compileItemRegex_(source) {
+    if (!source || !String(source).trim()) return null;
+    try {
+      return new RegExp(String(source).trim());
+    } catch (ignore) {
+      return null;
+    }
+  }
+
+  function bootItemInclude_() {
+    var s = (options && options.itemInclude) || readBootAttr_("data-mrj-item-include");
+    return compileItemRegex_(s);
+  }
+
+  function bootItemExclude_() {
+    var s = (options && options.itemExclude) || readBootAttr_("data-mrj-item-exclude");
+    return compileItemRegex_(s);
+  }
+
+  function rowPassesItemFilter_(row) {
+    var itemId = rowItemId_(row);
+    if (!itemId) return false;
+    var prog = rowProgramName_(row).toLowerCase();
+    var key = panelAppKey_();
+
+    if (key === "word-master") {
+      if (DAY2_PACK_ITEM_RE.test(itemId)) return false;
+    } else if (key === "day2-words") {
+      if (prog === "word-master" && !DAY2_PACK_ITEM_RE.test(itemId)) return false;
+    } else if (key === "pronounce-whistle") {
+      if (!WHISTLE_ITEM_RE.test(itemId)) return false;
+    } else if (key === "pronounce") {
+      if (WHISTLE_ITEM_RE.test(itemId)) return false;
+    } else if (key === "mrj-decodable-try") {
+      if (!DECODABLE_TRY_ITEM_RE.test(itemId)) return false;
+    } else if (key === "mrj-decodable-try-21") {
+      if (!DECODABLE_21_ITEM_RE.test(itemId)) return false;
+    } else if (key === "mrj-decodable-try-41") {
+      if (!DECODABLE_41_ITEM_RE.test(itemId)) return false;
+    } else if (key === "mrj-decodable-try-61") {
+      if (!DECODABLE_61_ITEM_RE.test(itemId)) return false;
+    } else if (key === "mrj-decodable-try-81") {
+      if (!DECODABLE_81_ITEM_RE.test(itemId)) return false;
+    } else if (key === "mrj-decodable-try-71") {
+      if (!DECODABLE_71_ITEM_RE.test(itemId)) return false;
+    }
+
+    var inc = bootItemInclude_();
+    if (inc && !inc.test(itemId)) return false;
+    var exc = bootItemExclude_();
+    if (exc && exc.test(itemId)) return false;
+    return true;
+  }
+
+  function programNameSet_() {
+    var set = {};
+    scoreProgramsForApp_().forEach(function (name) {
+      set[String(name).trim().toLowerCase()] = true;
+    });
+    return set;
+  }
+
+  function rowProgramName_(row) {
+    if (!row || typeof row !== "object") return "";
+    return String(row.program || row.curriculum_program || "").trim();
+  }
+
+  function rowItemId_(row) {
+    if (!row || typeof row !== "object") return "";
+    return String(row.item_id || row.itemId || row.item || "").trim();
+  }
+
+  function normalizeProgressRow_(row) {
+    row = row || {};
+    var scoreVal = row.score_value != null ? row.score_value : row.scoreValue;
+    var scoreMax = row.score_max != null ? row.score_max : row.scoreMax;
+    var scorePct = row.score_pct != null ? row.score_pct : row.scorePct;
+    if (scorePct == null && scoreVal != null && scoreMax != null && Number(scoreMax) > 0) {
+      scorePct = Math.round((Number(scoreVal) / Number(scoreMax)) * 100);
+    }
+    var scoreText = "";
+    if (scoreVal != null && scoreMax != null) {
+      scoreText = String(scoreVal) + "/" + String(scoreMax);
+      if (scorePct != null) scoreText += " (" + String(scorePct) + "%)";
+    } else if (scorePct != null) {
+      scoreText = String(scorePct) + "%";
+    } else if (row.score != null) {
+      scoreText = String(row.score);
+    }
+    return {
+      program: rowProgramName_(row),
+      item_id: rowItemId_(row),
+      score_value: scoreVal,
+      score_max: scoreMax,
+      score_pct: scorePct,
+      local_date: row.local_date || row.localDate || row.date || "",
+      updated_at: row.updated_at || row.updatedAt || "",
+      label: row.label != null ? String(row.label) : "",
+      scoreText: scoreText
+    };
+  }
+
+  function rowMatchesAppPrograms_(row, programSet) {
+    var p = rowProgramName_(row).toLowerCase();
+    return !!(p && programSet[p]);
+  }
+
+  function itemIdSortKey_(itemId) {
+    var id = String(itemId || "");
+    var m = id.match(/^(g(\d+):)?(u(\d+)|unit(\d+))?(.*)$/i);
+    if (!m) return { book: 0, unit: 0, rest: id.toLowerCase() };
+    var book = m[2] ? parseInt(m[2], 10) : 1;
+    var unit = 0;
+    if (m[4]) unit = parseInt(m[4], 10);
+    else if (m[5]) unit = parseInt(m[5], 10);
+    return { book: book, unit: unit, rest: (m[6] || id).toLowerCase() };
+  }
+
+  function compareItemIds_(a, b) {
+    var ka = itemIdSortKey_(a);
+    var kb = itemIdSortKey_(b);
+    if (ka.book !== kb.book) return ka.book - kb.book;
+    if (ka.unit !== kb.unit) return ka.unit - kb.unit;
+    if (ka.rest < kb.rest) return -1;
+    if (ka.rest > kb.rest) return 1;
+    return 0;
+  }
+
+  function sortPanelRows_(rows) {
+    rows = rows.slice();
+    rows.sort(function (a, b) {
+      var cmp = compareItemIds_(a.item_id, b.item_id);
+      if (cmp !== 0) return cmp;
+      var da = String(a.local_date || a.updated_at || "");
+      var db = String(b.local_date || b.updated_at || "");
+      if (da < db) return -1;
+      if (da > db) return 1;
+      return 0;
+    });
+    return rows;
+  }
+
+  function averagePct_(rows) {
+    var sum = 0;
+    var n = 0;
+    rows.forEach(function (row) {
+      if (row.score_pct == null || row.score_pct === "") return;
+      var v = Number(row.score_pct);
+      if (!isNaN(v)) {
+        sum += v;
+        n += 1;
+      }
+    });
+    if (!n) return null;
+    return Math.round(sum / n);
+  }
+
+  function itemLabel_(itemId, row) {
+    if (row && row.label != null && String(row.label).trim()) {
+      return String(row.label).trim();
+    }
+    try {
+      var labels = global.MRJ_ITEM_LABELS;
+      if (labels && typeof labels === "object" && labels[itemId] != null) {
+        return String(labels[itemId]);
+      }
+    } catch (ignore) {}
+    return "";
+  }
+
   function mount(el, opts) {
     installStorageListener_();
     var node = resolveEl_(el);
@@ -315,6 +633,7 @@
       state.progressError = "";
       saveSession_();
       renderSignedIn_();
+      updateStudentChip_();
       dispatchReady_();
     }).catch(function () {});
   }
@@ -330,11 +649,15 @@
   function signOut() {
     viewGen += 1;
     sessionGen += 1;
+    loadPlaceSeq += 1;
     busy = false;
     activeLoginFlight = null;
     state = { id: "", token: "", progress: [], progressError: "" };
     packState = {};
     clearSession_();
+    closeProgressPanel();
+    disconnectChipObserver_();
+    updateStudentChip_();
     if (rootEl) renderDoors_();
   }
 
@@ -520,6 +843,7 @@
         renderDoors_("Could not check the sign-in book. Try again.");
         return;
       }
+      loadPlaceSeq += 1;
       viewGen += 1;
       busy = false;
       renderDoors_("Didn't save. Try again.");
@@ -576,15 +900,24 @@
     return body;
   }
 
-  function fetchAllProgress_(id, tokenValue, program, hook) {
+  function fetchAllProgress_(id, tokenValue, program, hook, fetchOpts) {
+    fetchOpts = fetchOpts || {};
+    var maxPages = fetchOpts.panel ? PROGRESS_PANEL_MAX_PAGES : PROGRESS_MAX_PAGES;
     var all = [];
     var offset = 0;
     var nextId = id;
     var nextToken = tokenValue;
     var pages = 0;
+    var hitCap = false;
     function pullPage() {
+      if (fetchOpts.cancelCheck && fetchOpts.cancelCheck()) {
+        return Promise.resolve({ ok: false, error: "cancelled" });
+      }
       pages += 1;
       return post_(progressBody_(id, tokenValue, program, offset), hook).then(function (data) {
+        if (fetchOpts.cancelCheck && fetchOpts.cancelCheck()) {
+          return { ok: false, error: "cancelled" };
+        }
         if (!data || !data.ok) {
           return {
             ok: false,
@@ -594,8 +927,10 @@
             token: data && data.token ? data.token : nextToken
           };
         }
-        if (data.id) nextId = data.id;
-        if (data.token) nextToken = data.token;
+        if (!fetchOpts.panel) {
+          if (data.id) nextId = data.id;
+          if (data.token) nextToken = data.token;
+        }
         var chunk = Array.isArray(data.progress) ? data.progress : [];
         all = all.concat(chunk);
         var hasMore = data.hasMore === true;
@@ -603,7 +938,10 @@
           hasMore = true;
         }
         if (typeof data.total === "number" && all.length >= data.total) hasMore = false;
-        if (pages >= PROGRESS_MAX_PAGES) hasMore = false;
+        if (pages >= maxPages) {
+          if (hasMore) hitCap = true;
+          hasMore = false;
+        }
         if (hasMore && chunk.length > 0) {
           offset += chunk.length;
           return pullPage();
@@ -612,11 +950,168 @@
           ok: true,
           id: nextId,
           token: nextToken,
-          progress: all
+          progress: all,
+          capped: hitCap
         };
       });
     }
     return pullPage();
+  }
+
+  function filterProgressForApp_(rows) {
+    var programSet = programNameSet_();
+    var out = [];
+    (rows || []).forEach(function (row) {
+      if (!rowMatchesAppPrograms_(row, programSet)) return;
+      if (!rowPassesItemFilter_(row)) return;
+      out.push(row);
+    });
+    return out;
+  }
+
+  function providerRowToRaw_(row) {
+    row = row || {};
+    return {
+      program: row.program || "",
+      item_id: row.item_id || row.itemId || row.item || "",
+      itemId: row.item_id || row.itemId || row.item || "",
+      score_value: row.score_value != null ? row.score_value : row.scoreValue,
+      score_max: row.score_max != null ? row.score_max : row.scoreMax,
+      score_pct: row.score_pct != null ? row.score_pct : row.scorePct,
+      local_date: row.local_date || row.localDate || row.date || "",
+      label: row.label != null ? String(row.label) : ""
+    };
+  }
+
+  function rowUpdatedMs_(row) {
+    var t = row.updated_at || row.updatedAt || row.local_date || row.localDate || "";
+    var ms = Date.parse(String(t));
+    return isNaN(ms) ? 0 : ms;
+  }
+
+  function primaryScoreProgram_() {
+    var programs = scoreProgramsForApp_();
+    if (programs.length) return String(programs[0]).trim().toLowerCase();
+    return appKey_();
+  }
+
+  function collapseServerRowsByItemId_(rows) {
+    var primary = primaryScoreProgram_();
+    var groups = {};
+    (rows || []).forEach(function (row) {
+      var id = rowItemId_(row);
+      if (!id) return;
+      if (!groups[id]) groups[id] = [];
+      groups[id].push(row);
+    });
+    var out = [];
+    for (var id in groups) {
+      if (!Object.prototype.hasOwnProperty.call(groups, id)) continue;
+      var pool = groups[id];
+      var primaryRows = pool.filter(function (row) {
+        return rowProgramName_(row).toLowerCase() === primary;
+      });
+      var pickFrom = primaryRows.length ? primaryRows : pool;
+      pickFrom.sort(function (a, b) {
+        return rowUpdatedMs_(b) - rowUpdatedMs_(a);
+      });
+      out.push(pickFrom[0]);
+    }
+    return out;
+  }
+
+  function mergeProviderRows_(serverRows, providerRows) {
+    serverRows = collapseServerRowsByItemId_(serverRows || []);
+    var map = {};
+    serverRows.forEach(function (row) {
+      var id = rowItemId_(row);
+      if (!id) return;
+      map[id] = row;
+    });
+    (providerRows || []).forEach(function (row) {
+      var raw = providerRowToRaw_(row);
+      var id = rowItemId_(raw);
+      if (!id) return;
+      map[id] = raw;
+    });
+    var out = [];
+    for (var k in map) {
+      if (Object.prototype.hasOwnProperty.call(map, k)) out.push(map[k]);
+    }
+    return out;
+  }
+
+  function invokePanelRowsProvider_(studentId) {
+    if (!panelRowsProvider) return Promise.resolve([]);
+    try {
+      var out = panelRowsProvider(studentId);
+      if (out && typeof out.then === "function") return out.then(function (rows) {
+        return Array.isArray(rows) ? rows : [];
+      });
+      return Promise.resolve(Array.isArray(out) ? out : []);
+    } catch (ignore) {
+      return Promise.resolve([]);
+    }
+  }
+
+  function setPanelRowsProvider(fn) {
+    try {
+      panelRowsProvider = typeof fn === "function" ? fn : null;
+    } catch (ignore) {
+      panelRowsProvider = null;
+    }
+  }
+
+  function fetchPanelProgress_(snap, fetchOpts) {
+    fetchOpts = fetchOpts || {};
+    var programs = scoreProgramsForApp_();
+    var capped = false;
+
+    function runPrograms(list, index, acc) {
+      if (fetchOpts.cancelCheck && fetchOpts.cancelCheck()) {
+        return Promise.resolve({ ok: false, error: "cancelled" });
+      }
+      if (index >= list.length) {
+        return Promise.resolve({ ok: true, progress: acc, capped: capped });
+      }
+      var prog = list[index];
+      return fetchAllProgress_(snap.id, snap.token, prog, null, {
+        panel: true,
+        cancelCheck: fetchOpts.cancelCheck
+      }).then(function (result) {
+        if (fetchOpts.cancelCheck && fetchOpts.cancelCheck()) {
+          return { ok: false, error: "cancelled" };
+        }
+        if (!result || !result.ok) return result;
+        if (result.capped) capped = true;
+        return runPrograms(list, index + 1, acc.concat(result.progress || []));
+      });
+    }
+
+    var chain;
+    if (programs.length) {
+      chain = runPrograms(programs, 0, []);
+    } else {
+      chain = fetchAllProgress_(snap.id, snap.token, "", null, {
+        panel: true,
+        cancelCheck: fetchOpts.cancelCheck
+      });
+    }
+
+    return chain.then(function (result) {
+      if (!result || !result.ok) return result;
+      var filtered = filterProgressForApp_(result.progress || []);
+      return invokePanelRowsProvider_(snap.id).then(function (providerRows) {
+        if (fetchOpts.cancelCheck && fetchOpts.cancelCheck()) {
+          return { ok: false, error: "cancelled" };
+        }
+        return {
+          ok: true,
+          progress: mergeProviderRows_(filtered, providerRows),
+          capped: !!(result.capped || capped)
+        };
+      });
+    });
   }
 
   function retryProgressInBackground_(id, tokenValue) {
@@ -636,21 +1131,31 @@
   }
 
   function loadPlace_(id, tokenValue) {
+    var seq = ++loadPlaceSeq;
+    var loadGen = sessionGen;
+    var loadId = id == null ? "" : String(id);
+    var loadToken = tokenValue == null ? "" : String(tokenValue);
     renderStatus_(MESSAGES.loading_place);
-    fetchAllProgress_(id, tokenValue, appProgram_()).then(function (result) {
+    fetchAllProgress_(loadId, loadToken, appProgram_()).then(function (result) {
+      if (seq !== loadPlaceSeq) return;
+      if (loadGen !== sessionGen) return;
+      if (state.id && rules.idKey(state.id) !== rules.idKey(loadId)) return;
       if (result && result.ok) {
-        finish_(result.id || id, result.token || tokenValue, result.progress);
+        finish_(result.id || loadId, result.token || loadToken, result.progress);
         return;
       }
       if (sessionRejected_(result)) {
-        renderLogin_("Sign in again.", [id, ""]);
+        renderLogin_("Sign in again.", [loadId, ""]);
         return;
       }
       var err = (result && result.error) ? result.error : "progress_load_failed";
-      finish_((result && result.id) || id, (result && result.token) || tokenValue, [], err);
+      finish_((result && result.id) || loadId, (result && result.token) || loadToken, [], err);
       retryProgressInBackground_(state.id, state.token);
     }).catch(function () {
-      finish_(id, tokenValue, [], "network");
+      if (seq !== loadPlaceSeq) return;
+      if (loadGen !== sessionGen) return;
+      if (state.id && rules.idKey(state.id) !== rules.idKey(loadId)) return;
+      finish_(loadId, loadToken, [], "network");
       retryProgressInBackground_(state.id, state.token);
     });
   }
@@ -690,6 +1195,7 @@
     state.progressError = progressError ? String(progressError) : "";
     saveSession_();
     renderSignedIn_();
+    updateStudentChip_();
     dispatchReady_();
   }
 
@@ -879,6 +1385,1093 @@
     return { label: label, type: type, autocomplete: autocomplete };
   }
 
+  function disconnectChipObserver_() {
+    try {
+      if (chipMutationObserver && chipMutationObserver.disconnect) {
+        chipMutationObserver.disconnect();
+      }
+    } catch (ignore) {}
+    chipMutationObserver = null;
+    if (chipLayoutTrailingTimer) {
+      clearTimeout(chipLayoutTrailingTimer);
+      chipLayoutTrailingTimer = null;
+    }
+    chipChromeTimer = null;
+    if (chipIdleMutationObserver && chipIdleMutationObserver.disconnect) {
+      try {
+        chipIdleMutationObserver.disconnect();
+      } catch (ignore) {}
+    }
+    chipIdleMutationObserver = null;
+  }
+
+  function isInsideAuthChrome_(node) {
+    if (!node || node.nodeType !== 1) return false;
+    if (chipEl && (node === chipEl || (chipEl.contains && chipEl.contains(node)))) return true;
+    if (panelRootEl && (node === panelRootEl || (panelRootEl.contains && panelRootEl.contains(node)))) {
+      return true;
+    }
+    if (node.closest) {
+      if (node.closest("#mrj-auth-gate, .mrj-auth, #mrj-auth-student-chip, .mrj-auth-panel-root")) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function isChipSlotMutation_(record) {
+    if (!record || record.type !== "attributes") return false;
+    var t = record.target;
+    if (!t || !t.getAttribute) return false;
+    if (t.getAttribute("data-mrj-chip-slot") !== "1") return false;
+    var name = record.attributeName || "";
+    return name === "data-mrj-chip-slot" || name === "style";
+  }
+
+  function isPillWiringMutation_(record) {
+    if (!record || record.type !== "attributes") return false;
+    var t = record.target;
+    if (!t || !t.getAttribute) return false;
+    if (t.getAttribute("data-mrj-pill-wired") !== "1") return false;
+    var name = record.attributeName || "";
+    return (
+      name === "data-mrj-pill-wired" ||
+      name === "role" ||
+      name === "tabindex" ||
+      name === "aria-label" ||
+      name === "style" ||
+      name === "class"
+    );
+  }
+
+  function mutationRecordsNeedLayout_(records) {
+    if (!records || !records.length) return false;
+    for (var i = 0; i < records.length; i++) {
+      var r = records[i];
+      var t = r.target;
+      if (!t || t.nodeType !== 1) continue;
+      if (isInsideAuthChrome_(t)) continue;
+      if (isPillWiringMutation_(r)) continue;
+      if (isChipSlotMutation_(r)) continue;
+      return true;
+    }
+    return false;
+  }
+
+  function scheduleStudentChrome_() {
+    if (chipChromeTimer) return;
+    var raf = global.requestAnimationFrame || function (fn) { setTimeout(fn, 16); };
+    chipChromeTimer = raf(function () {
+      chipChromeTimer = null;
+      applyStudentChrome_();
+      scheduleChipLayout_();
+    });
+  }
+
+  function installChipObserver_() {
+    if (!global.document || !global.document.body || chipMutationObserver) return;
+    if (typeof MutationObserver !== "function") return;
+    chipMutationObserver = new MutationObserver(function (records) {
+      if (!mutationRecordsNeedLayout_(records)) {
+        chipObserverIgnoredCount += 1;
+        return;
+      }
+      chipObserverNotifyCount += 1;
+      scheduleStudentChrome_();
+    });
+    try {
+      chipMutationObserver.observe(global.document.body, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ["class", "style", "hidden"]
+      });
+    } catch (ignore) {}
+  }
+
+  function installChipIdleMutationWatcher_() {
+    if (!global.MRJ_AUTH_TEST_MODE || !chipEl || chipIdleMutationObserver) return;
+    if (typeof MutationObserver !== "function") return;
+    chipIdleMutationObserver = new MutationObserver(function () {
+      chipIdleMutationCount += 1;
+    });
+    try {
+      chipIdleMutationObserver.observe(chipEl, {
+        attributes: true,
+        childList: true,
+        characterData: true,
+        subtree: true
+      });
+    } catch (ignore) {}
+  }
+
+  function scheduleChipLayout_() {
+    if (!chipEl || !chipLayoutAllowed_()) return;
+    var now = Date.now();
+    var since = now - chipLayoutLastRun;
+    if (since >= 500) {
+      if (chipLayoutTrailingTimer) {
+        clearTimeout(chipLayoutTrailingTimer);
+        chipLayoutTrailingTimer = null;
+      }
+      var raf = global.requestAnimationFrame || function (fn) { setTimeout(fn, 16); };
+      raf(function () {
+        chipLayoutLastRun = Date.now();
+        applyChipLayout_();
+      });
+      return;
+    }
+    if (chipLayoutTrailingTimer) return;
+    chipLayoutTrailingTimer = setTimeout(function () {
+      chipLayoutTrailingTimer = null;
+      chipLayoutLastRun = Date.now();
+      applyChipLayout_();
+    }, 500 - since);
+  }
+
+  function chipOffsetStyles_() {
+    var top = readBootAttr_("data-mrj-chip-top") || (options && options.chipTop) || "";
+    var right = readBootAttr_("data-mrj-chip-right") || (options && options.chipRight) || "";
+    return { top: top, right: right };
+  }
+
+  function rectsOverlap_(a, b) {
+    return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+  }
+
+  function isChipObstacle_(node) {
+    if (!node || node.nodeType !== 1) return false;
+    if (node === chipEl || node === panelRootEl) return false;
+    if (node.closest && node.closest("#mrj-auth-student-chip, .mrj-auth-panel-root, #mrj-auth-gate, .mrj-auth")) {
+      return false;
+    }
+    try {
+      var style = global.getComputedStyle ? global.getComputedStyle(node) : null;
+      if (style) {
+        if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") return false;
+      }
+      if (node.hidden) return false;
+      var r = node.getBoundingClientRect();
+      if (!r || r.width < 2 || r.height < 2) return false;
+      if (r.bottom < 0 || r.top > (global.innerHeight || 800)) return false;
+    } catch (ignore) {
+      return false;
+    }
+    var tag = (node.tagName || "").toLowerCase();
+    if (tag === "button" || tag === "a" || tag === "select" || tag === "input" || tag === "textarea") {
+      return true;
+    }
+    if (node.getAttribute && node.getAttribute("role") === "button") return true;
+    if (node.getAttribute && node.getAttribute("onclick")) return true;
+    if (node.classList) {
+      if (node.classList.contains("pill")) return true;
+      var cls = node.className && String(node.className);
+      if (cls && (cls.indexOf("pill") !== -1 || cls.indexOf("badge") !== -1)) return true;
+    }
+    return false;
+  }
+
+  function collectChipObstacles_() {
+    var out = [];
+    if (!global.document || !global.document.querySelectorAll) return out;
+    var nodes = global.document.querySelectorAll(
+      "button, a, select, input, textarea, [role='button'], [onclick], .pill, [class*='pill'], [class*='badge']"
+    );
+    for (var i = 0; i < nodes.length; i++) {
+      if (isChipObstacle_(nodes[i])) out.push(nodes[i]);
+    }
+    return out;
+  }
+
+  function isCanvasRelatedNode_(node) {
+    if (!node || node.nodeType !== 1) return false;
+    var tag = (node.tagName || "").toLowerCase();
+    if (tag === "canvas") return true;
+    if (node.closest && node.closest("canvas")) return true;
+    return false;
+  }
+
+  function isChipMarginValidationTarget_(node) {
+    if (!node || node.nodeType !== 1) return false;
+    if (node === chipEl || node === panelRootEl) return false;
+    if (isCanvasRelatedNode_(node)) return false;
+    if (node.closest && node.closest("#mrj-auth-student-chip, .mrj-auth-panel-root, #mrj-auth-gate, .mrj-auth")) {
+      return false;
+    }
+    try {
+      var style = global.getComputedStyle ? global.getComputedStyle(node) : null;
+      if (style) {
+        if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") return false;
+      }
+      if (node.hidden) return false;
+      var r = node.getBoundingClientRect();
+      if (!r || r.width < 2 || r.height < 2) return false;
+    } catch (ignore) {
+      return false;
+    }
+    if (isChipObstacle_(node)) return true;
+    var cls = node.className && String(node.className).toLowerCase();
+    if (cls && cls.indexOf("card") !== -1) return true;
+    return false;
+  }
+
+  function collectChipMarginValidationTargets_() {
+    var out = [];
+    if (!global.document || !global.document.querySelectorAll) return out;
+    var nodes = global.document.querySelectorAll(
+      "button, a, select, input, textarea, [role='button'], [onclick], [class*='card']"
+    );
+    for (var i = 0; i < nodes.length; i++) {
+      if (isChipMarginValidationTarget_(nodes[i])) out.push(nodes[i]);
+    }
+    return out;
+  }
+
+  function chipMarginTopOverlapsTarget_(chipRect, node) {
+    if (!chipRect || !node) return false;
+    try {
+      var r = node.getBoundingClientRect();
+      if (!r || !r.width) return false;
+      return rectsOverlap_(chipRect, r);
+    } catch (ignore) {
+      return false;
+    }
+  }
+
+  function chipMarginLandingClear_(chipRect) {
+    if (!chipMarginTopFitsViewport_(chipRect)) return false;
+    var validationTargets = collectChipMarginValidationTargets_();
+    for (var v = 0; v < validationTargets.length; v++) {
+      if (chipMarginTopOverlapsTarget_(chipRect, validationTargets[v])) return false;
+    }
+    return true;
+  }
+
+  function chipMarginBumpForOverlaps_(chipRect, compact) {
+    var bump = 0;
+    var controlObs = collectChipObstacles_();
+    for (var c = 0; c < controlObs.length; c++) {
+      var cor = controlObs[c].getBoundingClientRect();
+      if (!cor || !cor.width) continue;
+      if (rectsOverlap_(chipRect, cor)) {
+        var cneed = cor.bottom - chipRect.top + 6;
+        if (cneed > bump) bump = cneed;
+      }
+    }
+    if (!compact || chipBodySlotPx_ === 0) {
+      var textObs = collectChipTextObstacles_(compact);
+      for (var t = 0; t < textObs.length; t++) {
+        var tor = textObs[t].getBoundingClientRect();
+        if (!tor || !tor.width) continue;
+        if (!verticalOverlapChip_(chipRect, tor)) continue;
+        if (compact && !obstacleOverlapsChipColumn_(chipRect, tor)) continue;
+        if (rectsOverlap_(chipRect, tor)) {
+          var tneed = tor.bottom - chipRect.top + 6;
+          if (tneed > bump) bump = tneed;
+        }
+      }
+    }
+    return bump;
+  }
+
+  function chipLayoutAllowed_() {
+    if (!chipEl || !global.document || !state.id) return false;
+    if (findOwnRecord_()) return false;
+    if (!chipDisabled_() && findNamePill_()) return false;
+    if (chipDisabled_()) return false;
+    return true;
+  }
+
+  function computeChipMarginLayout_(compact) {
+    var anchorRect = chipLayoutRectWithMargin_(0);
+    if (!anchorRect || !anchorRect.width) {
+      return { marginTop: "", hide: false };
+    }
+    var maxMarginPx = compact ? 100 : 64;
+    var extraTop = 0;
+    var maxIter = 16;
+    var overCap = false;
+    var lastControlClearMargin = null;
+    var lastFullClearMargin = null;
+    var baseRect = chipLayoutRectWithMargin_(0);
+    var baseLandingClear = chipMarginLandingClear_(baseRect);
+    var baseBump = chipMarginBumpForOverlaps_(baseRect, compact);
+    if (baseLandingClear && baseBump <= 0) {
+      return { marginTop: "", hide: false };
+    }
+    while (maxIter-- > 0) {
+      var trialRect = chipLayoutRectWithMargin_(extraTop);
+      var bump = chipMarginBumpForOverlaps_(trialRect, compact);
+      if (chipMarginLandingClear_(trialRect) && chipMarginTopFitsViewport_(trialRect)) {
+        lastControlClearMargin = extraTop;
+        if (bump <= 0) {
+          lastFullClearMargin = extraTop;
+          break;
+        }
+      }
+      if (bump <= 0) break;
+      extraTop += bump;
+      if (extraTop > maxMarginPx) {
+        overCap = true;
+        break;
+      }
+      trialRect = chipLayoutRectWithMargin_(extraTop);
+      if (!chipMarginTopFitsViewport_(trialRect)) {
+        overCap = true;
+        break;
+      }
+    }
+    if (lastFullClearMargin == null) {
+      var finalRect = chipLayoutRectWithMargin_(extraTop);
+      var finalBump = chipMarginBumpForOverlaps_(finalRect, compact);
+      if (chipMarginLandingClear_(finalRect) && chipMarginTopFitsViewport_(finalRect)) {
+        lastControlClearMargin = extraTop;
+        if (finalBump <= 0) {
+          lastFullClearMargin = extraTop;
+        }
+      }
+    }
+    if (lastFullClearMargin != null) {
+      return {
+        marginTop: lastFullClearMargin > 0 ? lastFullClearMargin + "px" : "",
+        hide: false
+      };
+    }
+    // Phone cap (100px) may be exceeded in the walk; keep the last control-clear
+    // margin from the loop (e.g. Ski Jump two-row score bar ~151px) instead of hiding.
+    if ((overCap || extraTop > maxMarginPx) && lastControlClearMargin != null) {
+      return {
+        marginTop: lastControlClearMargin > 0 ? lastControlClearMargin + "px" : "",
+        hide: false
+      };
+    }
+    if (!baseLandingClear) {
+      return { marginTop: "", hide: true };
+    }
+    return { marginTop: "", hide: false };
+  }
+
+  function chipMarginTopFitsViewport_(chipRect) {
+    if (!chipRect) return false;
+    var vh = global.innerHeight || 800;
+    if (chipRect.top < -2) return false;
+    if (chipRect.bottom > vh - 8) return false;
+    return true;
+  }
+
+  function isChipTextObstacle_(node, compact) {
+    if (!compact) return false;
+    if (!node || node.nodeType !== 1) return false;
+    if (isChipObstacle_(node)) return false;
+    if (node === chipEl || node === panelRootEl) return false;
+    if (node.closest && node.closest("#mrj-auth-student-chip, .mrj-auth-panel-root, #mrj-auth-gate, .mrj-auth")) {
+      return false;
+    }
+    try {
+      var style = global.getComputedStyle ? global.getComputedStyle(node) : null;
+      if (style) {
+        if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") return false;
+      }
+      if (node.hidden) return false;
+      var text = String(node.innerText || node.textContent || "").replace(/\s+/g, " ").trim();
+      if (!text || text.length < 2) return false;
+      var tag = (node.tagName || "").toLowerCase();
+      var isHeading = tag.length === 2 && tag.charAt(0) === "h" && tag.charAt(1) >= "1" && tag.charAt(1) <= "6";
+      var cls = node.className && String(node.className).toLowerCase();
+      var id = node.id && String(node.id).toLowerCase();
+      var hudLike =
+        (id && (id === "lf-left" || id.indexOf("lf-") === 0)) ||
+        (cls &&
+          (cls.indexOf("hud") !== -1 ||
+            cls.indexOf("score") !== -1 ||
+            cls.indexOf("points") !== -1));
+      var titleLike =
+        cls &&
+        (cls.indexOf("title") !== -1 ||
+          cls.indexOf("heading") !== -1 ||
+          cls.indexOf("subtitle") !== -1 ||
+          cls.indexOf("hero") !== -1 ||
+          cls.indexOf("greeting") !== -1);
+      if (!isHeading && tag !== "p" && tag !== "legend" && tag !== "header" && !titleLike && !hudLike) {
+        return false;
+      }
+      var r = node.getBoundingClientRect();
+      if (!r || r.width < 2 || r.height < 2) return false;
+      var vh = global.innerHeight || 800;
+      var vw = global.innerWidth || 800;
+      if (r.height > vh * 0.28) return false;
+      if (!isHeading && r.width > vw * 0.94) return false;
+      if (r.bottom < 0 || r.top > vh * 0.55) return false;
+    } catch (ignore) {
+      return false;
+    }
+    return true;
+  }
+
+  function collectChipTextObstacles_(compact) {
+    var out = [];
+    if (!compact || !global.document || !global.document.querySelectorAll) return out;
+    var nodes = global.document.querySelectorAll(
+      "header, h1, h2, h3, h4, h5, h6, p, legend, [class*='title'], [class*='heading'], [class*='subtitle'], [class*='hero'], [class*='greeting'], [class*='points'], [class*='hud'], [class*='score'], #lf-left, [id^='lf-']"
+    );
+    for (var i = 0; i < nodes.length; i++) {
+      if (isChipTextObstacle_(nodes[i], compact)) out.push(nodes[i]);
+    }
+    return out;
+  }
+
+  function parseChipMarginTopPx_(margin) {
+    if (!margin) return 0;
+    var m = String(margin).match(/^([\d.]+)px$/);
+    return m ? parseFloat(m[1]) : 0;
+  }
+
+  function chipCssPosition_(node) {
+    if (!node || node.nodeType !== 1 || !global.getComputedStyle) return "";
+    try {
+      return global.getComputedStyle(node).position || "";
+    } catch (ignore) {
+      return "";
+    }
+  }
+
+  function isOutOfFlowForChipPad_(node) {
+    if (!node || node.nodeType !== 1) return true;
+    if (node === chipEl) return true;
+    if (node.closest && node.closest("#mrj-auth-student-chip, .mrj-auth-panel-root, #mrj-auth-gate, .mrj-auth")) {
+      return true;
+    }
+    var cur = node;
+    while (cur && cur.nodeType === 1) {
+      var pos = chipCssPosition_(cur);
+      if (pos === "fixed" || pos === "sticky" || pos === "absolute") return true;
+      if (cur === global.document.body || cur === global.document.documentElement) break;
+      cur = cur.parentElement;
+    }
+    return false;
+  }
+
+  function verticalOverlapChip_(anchorRect, obstacleRect) {
+    if (!anchorRect || !obstacleRect) return false;
+    return (
+      obstacleRect.top < anchorRect.bottom + 2 &&
+      obstacleRect.bottom > anchorRect.top - 2
+    );
+  }
+
+  function paddingToClearObstacleTop_(anchorRect, obstacleTop) {
+    var need = anchorRect.bottom + 6 - obstacleTop;
+    return need > 0 ? need : 0;
+  }
+
+  function obstacleRectSansBodyPad_(node, slotPx) {
+    if (isOutOfFlowForChipPad_(node)) return null;
+    var r = node.getBoundingClientRect();
+    if (!r || r.width < 2 || r.height < 2) return null;
+    var shift = slotPx || 0;
+    return {
+      left: r.left,
+      right: r.right,
+      top: r.top - shift,
+      bottom: r.bottom - shift,
+      width: r.width,
+      height: r.height
+    };
+  }
+
+  function isFullScreenNoBodyPadPage_(anchorRect, obstacleNodes) {
+    var doc = global.document;
+    if (!doc) return false;
+    var html = doc.documentElement;
+    var body = doc.body;
+    var vh = global.innerHeight || 800;
+    function overflowClipped(el) {
+      if (!el || !global.getComputedStyle) return false;
+      try {
+        var st = global.getComputedStyle(el);
+        var ov = (st.overflow || "") + " " + (st.overflowY || "") + " " + (st.overflowX || "");
+        return /hidden|clip/.test(ov);
+      } catch (ignore) {
+        return false;
+      }
+    }
+    function heightLocksViewport(el) {
+      if (!el || !el.style) return false;
+      var h = String(el.style.height || "") + " " + String(el.style.minHeight || "");
+      if (/100vh|100dvh|100svh/.test(h)) return true;
+      if (!global.getComputedStyle) return false;
+      try {
+        var st = global.getComputedStyle(el);
+        var ch = (st.height || "") + " " + (st.minHeight || "");
+        return /100vh|100dvh|100svh/.test(ch);
+      } catch (ignore) {
+        return false;
+      }
+    }
+    var viewportFilled = false;
+    if (html && html.scrollHeight > 0 && html.scrollHeight <= vh + 1) viewportFilled = true;
+    if (body && body.scrollHeight > 0 && body.scrollHeight <= vh + 1) viewportFilled = true;
+    if (html && (overflowClipped(html) || heightLocksViewport(html))) return true;
+    if (body && (overflowClipped(body) || heightLocksViewport(body))) return true;
+    if (viewportFilled && doc.querySelector && doc.querySelector("canvas")) return true;
+    if (!anchorRect || !obstacleNodes || !obstacleNodes.length) return false;
+    for (var i = 0; i < obstacleNodes.length; i++) {
+      var node = obstacleNodes[i];
+      if (!node || node.nodeType !== 1) continue;
+      var tag = (node.tagName || "").toLowerCase();
+      if (tag === "canvas") {
+        var cr = node.getBoundingClientRect();
+        if (cr && cr.width && verticalOverlapChip_(anchorRect, cr) && obstacleOverlapsChipColumn_(anchorRect, cr)) {
+          return true;
+        }
+      }
+      if (node.querySelector) {
+        var canvas = node.querySelector("canvas");
+        if (canvas) {
+          var or = obstacleRectSansBodyPad_(node, chipBodySlotPx_);
+          if (or && verticalOverlapChip_(anchorRect, or) && obstacleOverlapsChipColumn_(anchorRect, or)) {
+            return true;
+          }
+        }
+      }
+    }
+    return false;
+  }
+
+  function applyChipBodySlot_(px) {
+    if (!global.document) return;
+    var next = Math.max(0, Math.round(px || 0));
+    if (next > CHIP_BODY_SLOT_MAX_PX_) next = CHIP_BODY_SLOT_MAX_PX_;
+    if (Math.abs(next - chipBodySlotPx_) < CHIP_BODY_SLOT_HYSTERESIS_PX_) return;
+    chipBodySlotPx_ = next;
+    var body = global.document.body;
+    if (!body || !body.style) return;
+    if (next > 0) {
+      body.setAttribute("data-mrj-chip-slot", "1");
+      if (body.style.paddingTop !== next + "px") {
+        body.style.paddingTop = next + "px";
+        chipDomWriteCount += 1;
+      }
+    } else {
+      body.removeAttribute("data-mrj-chip-slot");
+      if (body.style.paddingTop) {
+        body.style.paddingTop = "";
+        chipDomWriteCount += 1;
+      }
+    }
+  }
+
+  function obstacleOverlapsChipColumn_(anchorRect, obstacleRect) {
+    if (!anchorRect || !obstacleRect) return false;
+    return (
+      obstacleRect.right > anchorRect.left - 8 &&
+      obstacleRect.left < anchorRect.right + 8
+    );
+  }
+
+  function computeCompactChipBodySlot_(anchorRect) {
+    if (!anchorRect || !anchorRect.width) return 0;
+    var textObs = collectChipTextObstacles_(true);
+    var controlObs = collectChipObstacles_();
+    var all = textObs.concat(controlObs);
+    if (isFullScreenNoBodyPadPage_(anchorRect, all)) return 0;
+    var measureSlot = chipBodySlotPx_;
+    var minPad = 0;
+    for (var i = 0; i < all.length; i++) {
+      var or = obstacleRectSansBodyPad_(all[i], measureSlot);
+      if (!or) continue;
+      if (!obstacleOverlapsChipColumn_(anchorRect, or)) continue;
+      if (!verticalOverlapChip_(anchorRect, or)) continue;
+      var need = paddingToClearObstacleTop_(anchorRect, or.top);
+      if (need > minPad) minPad = need;
+    }
+    if (minPad > CHIP_BODY_SLOT_MAX_PX_) minPad = CHIP_BODY_SLOT_MAX_PX_;
+    return minPad;
+  }
+
+  function chipLayoutRectWithMargin_(extraTopPx) {
+    var r = chipEl.getBoundingClientRect();
+    var appliedMt = parseChipMarginTopPx_(chipEl.style.marginTop);
+    var top = r.top - appliedMt + (extraTopPx || 0);
+    return {
+      left: r.left,
+      right: r.right,
+      top: top,
+      bottom: top + r.height,
+      width: r.width,
+      height: r.height
+    };
+  }
+
+  function chipWriteStyle_(prop, value) {
+    if (!chipEl || !chipEl.style) return;
+    if (chipEl.style[prop] !== value) {
+      chipEl.style[prop] = value;
+      chipDomWriteCount += 1;
+    }
+  }
+
+  function chipWriteText_(text, title) {
+    if (!chipEl) return;
+    if (chipEl.textContent !== text) {
+      chipEl.textContent = text;
+      chipDomWriteCount += 1;
+    }
+    var t = title == null ? "" : String(title);
+    if (chipEl.title !== t) {
+      chipEl.title = t;
+      chipDomWriteCount += 1;
+    }
+  }
+
+  function chipWriteCompact_(compact) {
+    if (!chipEl || !chipEl.classList) return;
+    var has = chipEl.classList.contains("mrj-auth-chip-compact");
+    if (compact === has) return;
+    chipEl.classList.toggle("mrj-auth-chip-compact", compact);
+    chipDomWriteCount += 1;
+  }
+
+  function chipWriteAriaLabel_(label) {
+    if (!chipEl) return;
+    var cur = chipEl.getAttribute("aria-label") || "";
+    if (cur === label) return;
+    chipEl.setAttribute("aria-label", label);
+    chipDomWriteCount += 1;
+  }
+
+  function computeChipCollisionMarginTop_(compact) {
+    return computeChipMarginLayout_(compact).marginTop;
+  }
+
+  function applyChipLayout_() {
+    if (!chipLayoutAllowed_()) return;
+    chipLayoutRunCount += 1;
+    try {
+      if (chipEl.hidden) chipEl.hidden = false;
+      var vw = global.innerWidth || 800;
+      var compact = vw < 480;
+      var offsets = chipOffsetStyles_();
+      var baseTop = offsets.top
+        ? offsets.top
+        : "calc(0.55rem + env(safe-area-inset-top, 0px))";
+      var baseRight = offsets.right
+        ? offsets.right
+        : "calc(0.55rem + env(safe-area-inset-right, 0px))";
+      var displayId = state.id || "";
+      var text =
+        compact && displayId.length > 10 ? displayId.slice(0, 8) + "\u2026" : displayId;
+      var title = compact && displayId.length > 10 ? displayId : "";
+      var ariaLabel = "My scores for " + displayId;
+
+      chipWriteStyle_("top", baseTop);
+      chipWriteStyle_("right", baseRight);
+      chipWriteStyle_("marginRight", "");
+      chipWriteText_(text, title);
+      chipWriteCompact_(compact);
+      chipWriteAriaLabel_(ariaLabel);
+
+      var anchorRect = chipLayoutRectWithMargin_(0);
+      if (compact && anchorRect && anchorRect.width) {
+        applyChipBodySlot_(computeCompactChipBodySlot_(anchorRect));
+      } else {
+        applyChipBodySlot_(0);
+      }
+
+      var marginLayout = computeChipMarginLayout_(compact);
+      if (marginLayout.hide) {
+        chipWriteStyle_("marginTop", "");
+        setChipHidden_(true);
+        chipApplied_.compact = compact;
+        chipApplied_.top = baseTop;
+        chipApplied_.right = baseRight;
+        chipApplied_.marginTop = "";
+        chipApplied_.marginRight = "";
+        chipApplied_.text = text;
+        chipApplied_.title = title;
+        chipApplied_.ariaLabel = ariaLabel;
+        return;
+      }
+      setChipHidden_(false);
+      chipWriteStyle_("marginTop", marginLayout.marginTop);
+
+      chipApplied_.compact = compact;
+      chipApplied_.top = baseTop;
+      chipApplied_.right = baseRight;
+      chipApplied_.marginTop = marginLayout.marginTop;
+      chipApplied_.marginRight = "";
+      chipApplied_.text = text;
+      chipApplied_.title = title;
+      chipApplied_.ariaLabel = ariaLabel;
+    } catch (ignore) {}
+  }
+
+  function adjustChipPosition_() {
+    applyChipLayout_();
+  }
+
+  function isElementVisible_(node) {
+    if (!node || node.nodeType !== 1) return false;
+    try {
+      if (node.hidden) return false;
+      var style = global.getComputedStyle ? global.getComputedStyle(node) : null;
+      if (style) {
+        if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") {
+          return false;
+        }
+      }
+      var r = node.getBoundingClientRect();
+      return !!(r && r.width > 1 && r.height > 1);
+    } catch (ignore) {
+      return false;
+    }
+  }
+
+  function findOwnRecord_() {
+    if (!global.document) return null;
+    var node = null;
+    if (global.document.querySelector) {
+      node = global.document.querySelector("[data-mrj-own-record]");
+    }
+    if ((!node || !isElementVisible_(node)) && global.document.querySelectorAll) {
+      var nodes = global.document.querySelectorAll("[data-mrj-own-record]");
+      for (var o = 0; o < nodes.length; o++) {
+        if (isElementVisible_(nodes[o])) {
+          node = nodes[o];
+          break;
+        }
+      }
+    }
+    if (!node || !isElementVisible_(node)) return null;
+    return node;
+  }
+
+  function findNamePill_() {
+    if (!global.document) return null;
+    var pill = null;
+    if (global.document.querySelector) {
+      pill = global.document.querySelector(".student-pill, [data-mrj-name-pill]");
+    }
+    if ((!pill || !isElementVisible_(pill)) && global.document.querySelectorAll) {
+      var nodes = global.document.querySelectorAll(".student-pill, [data-mrj-name-pill]");
+      for (var i = 0; i < nodes.length; i++) {
+        if (isElementVisible_(nodes[i])) {
+          pill = nodes[i];
+          break;
+        }
+      }
+    }
+    if ((!pill || !isElementVisible_(pill)) && global.document.body && global.document.body.children) {
+      var kids = global.document.body.children;
+      for (var j = 0; j < kids.length; j++) {
+        var node = kids[j];
+        if (!node || node.nodeType !== 1) continue;
+        var isPill = false;
+        if (node.classList && node.classList.contains("student-pill")) isPill = true;
+        if (node.getAttribute && node.getAttribute("data-mrj-name-pill")) isPill = true;
+        if (node.className && String(node.className).indexOf("student-pill") !== -1) isPill = true;
+        if (isPill && isElementVisible_(node)) {
+          pill = node;
+          break;
+        }
+      }
+    }
+    if (!pill || !isElementVisible_(pill)) return null;
+    return pill;
+  }
+
+  function syncPillLabel_(pill) {
+    if (!pill) return;
+    var label = "My scores for " + (state.id || "");
+    var cur = pill.getAttribute("aria-label") || "";
+    if (cur !== label) pill.setAttribute("aria-label", label);
+    if (pill.title !== label) pill.title = label;
+  }
+
+  function wireNamePill_(pill) {
+    if (!pill) return;
+    if (pill.getAttribute("data-mrj-pill-wired") === "1") {
+      syncPillLabel_(pill);
+      return;
+    }
+    pill.setAttribute("data-mrj-pill-wired", "1");
+    pill.setAttribute("role", "button");
+    pill.setAttribute("tabindex", "0");
+    try {
+      if (pill.style.cursor !== "pointer") pill.style.cursor = "pointer";
+    } catch (ignore) {}
+    syncPillLabel_(pill);
+    pill.addEventListener("click", function () {
+      try {
+        openProgressPanel();
+      } catch (ignore) {}
+    });
+    pill.addEventListener("keydown", function (ev) {
+      if (!ev) return;
+      if (ev.key === "Enter" || ev.key === " ") {
+        ev.preventDefault();
+        try {
+          openProgressPanel();
+        } catch (ignore) {}
+      }
+    });
+  }
+
+  function ensureChipDom_() {
+    if (!global.document || !global.document.body) return;
+    if (!chipEl) {
+      chipEl = el_("button", "mrj-auth-chip");
+      chipEl.type = "button";
+      chipEl.id = "mrj-auth-student-chip";
+      chipEl.setAttribute("aria-haspopup", "dialog");
+      chipEl.addEventListener("click", function () {
+        try {
+          openProgressPanel();
+        } catch (ignore) {}
+      });
+      global.document.body.appendChild(chipEl);
+      if (global.addEventListener) {
+        global.addEventListener("resize", function () { scheduleStudentChrome_(); });
+        global.addEventListener("orientationchange", function () { scheduleStudentChrome_(); });
+      }
+    }
+    if (!panelRootEl) {
+      panelRootEl = el_("div", "mrj-auth-panel-root");
+      panelRootEl.id = "mrj-auth-progress-panel-root";
+      panelRootEl.hidden = true;
+      panelRootEl.setAttribute("aria-hidden", "true");
+      global.document.body.appendChild(panelRootEl);
+    }
+  }
+
+  function setChipHidden_(hidden) {
+    if (!chipEl) return;
+    if (!!chipEl.hidden === !!hidden) return;
+    chipEl.hidden = hidden;
+  }
+
+  function applyStudentChrome_() {
+    try {
+      if (!global.document || !global.document.body) return;
+      ensureChipDom_();
+      if (!state.id) {
+        setChipHidden_(true);
+        applyChipBodySlot_(0);
+        return;
+      }
+      installChipObserver_();
+      if (findOwnRecord_()) {
+        setChipHidden_(true);
+        applyChipBodySlot_(0);
+        return;
+      }
+      if (!chipDisabled_()) {
+        var pill = findNamePill_();
+        if (pill) {
+          setChipHidden_(true);
+          applyChipBodySlot_(0);
+          wireNamePill_(pill);
+          return;
+        }
+      }
+      if (chipDisabled_()) {
+        setChipHidden_(true);
+        applyChipBodySlot_(0);
+        return;
+      }
+      setChipHidden_(false);
+      installChipIdleMutationWatcher_();
+    } catch (ignore) {}
+  }
+
+  function updateStudentChip_() {
+    applyStudentChrome_();
+    scheduleChipLayout_();
+  }
+
+  function panelShell_(titleText) {
+    clear_(panelRootEl);
+    var backdrop = el_("button", "mrj-auth-panel-backdrop");
+    backdrop.type = "button";
+    backdrop.setAttribute("aria-label", "Close scores");
+    backdrop.addEventListener("click", function () {
+      closeProgressPanel();
+    });
+    var dialog = el_("div", "mrj-auth-panel");
+    dialog.setAttribute("role", "dialog");
+    dialog.setAttribute("aria-modal", "true");
+    dialog.setAttribute("aria-label", titleText || "My scores");
+    var header = el_("div", "mrj-auth-panel-header");
+    var title = el_("h2", "mrj-auth-panel-title");
+    title.textContent = titleText || "My scores";
+    var closeBtn = button_("×", "mrj-auth-panel-close");
+    closeBtn.setAttribute("aria-label", "Close");
+    closeBtn.addEventListener("click", function () {
+      closeProgressPanel();
+    });
+    header.appendChild(title);
+    header.appendChild(closeBtn);
+    var body = el_("div", "mrj-auth-panel-body");
+    dialog.appendChild(header);
+    dialog.appendChild(body);
+    panelRootEl.appendChild(backdrop);
+    panelRootEl.appendChild(dialog);
+    return { body: body, dialog: dialog };
+  }
+
+  function renderPanelLoading_(body) {
+    clear_(body);
+    var wait = el_("div", "mrj-auth-wait");
+    wait.setAttribute("aria-busy", "true");
+    var status = el_("p", "mrj-auth-status");
+    status.textContent = "Loading your scores…";
+    wait.appendChild(status);
+    wait.appendChild(waitBar_());
+    body.appendChild(wait);
+  }
+
+  function renderPanelError_(body, message, onRetry) {
+    clear_(body);
+    var err = el_("p", "mrj-auth-error");
+    err.textContent = message || "Could not load scores.";
+    body.appendChild(err);
+    var retry = button_("Retry", "mrj-auth-submit");
+    retry.addEventListener("click", function () {
+      if (typeof onRetry === "function") onRetry();
+    });
+    body.appendChild(retry);
+  }
+
+  function renderPanelRows_(body, rows, meta) {
+    meta = meta || {};
+    clear_(body);
+    var normalized = sortPanelRows_(rows.map(normalizeProgressRow_));
+    var avg = averagePct_(normalized);
+    var summary = el_("p", "mrj-auth-panel-summary");
+    summary.textContent =
+      normalized.length +
+      " score" +
+      (normalized.length === 1 ? "" : "s") +
+      (avg != null ? " · average " + avg + "%" : "");
+    body.appendChild(summary);
+    if (meta.capped) {
+      var cap = el_("p", "mrj-auth-panel-cap");
+      cap.textContent = "Showing the most recent scores we could load. Ask your teacher if something is missing.";
+      body.appendChild(cap);
+    }
+    if (!normalized.length) {
+      var empty = el_("p", "mrj-auth-empty");
+      empty.textContent = "No scores yet.";
+      body.appendChild(empty);
+      return;
+    }
+    var list = el_("ul", "mrj-auth-panel-list");
+    normalized.forEach(function (row) {
+      var item = el_("li", "mrj-auth-panel-row");
+      var label = itemLabel_(row.item_id, row);
+      if (label) {
+        var main = el_("span", "mrj-auth-prog-main");
+        main.textContent = label;
+        var sub = el_("span", "mrj-auth-panel-item-id");
+        sub.textContent = row.item_id;
+        item.appendChild(main);
+        item.appendChild(sub);
+      } else {
+        var mainOnly = el_("span", "mrj-auth-prog-main");
+        mainOnly.textContent = row.item_id || "—";
+        item.appendChild(mainOnly);
+      }
+      var scoreLine = el_("span", "mrj-auth-panel-score");
+      scoreLine.textContent = [row.scoreText, row.local_date].filter(Boolean).join(" · ");
+      item.appendChild(scoreLine);
+      list.appendChild(item);
+    });
+    body.appendChild(list);
+    var foot = el_("div", "mrj-auth-panel-foot");
+    var signOutBtn = button_("Sign out", "mrj-auth-signout");
+    signOutBtn.addEventListener("click", function () {
+      closeProgressPanel();
+      signOut();
+    });
+    foot.appendChild(signOutBtn);
+    body.appendChild(foot);
+  }
+
+  function loadPanelProgress_(fetchGen, snap) {
+    if (!panelRootEl || panelRootEl.hidden) return;
+    var body = panelBodyEl;
+    if (!body && panelRootEl.querySelector) {
+      body = panelRootEl.querySelector(".mrj-auth-panel-body");
+    }
+    if (!body) return;
+    renderPanelLoading_(body);
+    function cancelled() {
+      return !panelOpen || fetchGen !== panelFetchGen || !sessionMatches_(snap);
+    }
+    fetchPanelProgress_(snap, { cancelCheck: cancelled }).then(function (result) {
+      if (cancelled()) return;
+      if (!result || !result.ok) {
+        if (result && result.error === "cancelled") return;
+        renderPanelError_(body, (result && result.message) || "Could not load scores.", function () {
+          if (!state.id || !state.token) return;
+          loadPanelProgress_(fetchGen, captureSession_());
+        });
+        return;
+      }
+      renderPanelRows_(body, result.progress || [], { capped: result.capped });
+    }).catch(function () {
+      if (cancelled()) return;
+      renderPanelError_(body, "Could not load scores.", function () {
+        if (!state.id || !state.token) return;
+        loadPanelProgress_(fetchGen, captureSession_());
+      });
+    });
+  }
+
+  function openProgressPanel() {
+    try {
+      if (!state.id || !state.token) return;
+      if (panelOpen && panelRootEl && !panelRootEl.hidden) return;
+      ensureChipDom_();
+      panelOpen = true;
+      panelFetchGen += 1;
+      var fetchGen = panelFetchGen;
+      var snap = captureSession_();
+      panelRootEl.hidden = false;
+      panelRootEl.setAttribute("aria-hidden", "false");
+      var shell = panelShell_("My scores");
+      panelBodyEl = shell.body;
+      renderPanelLoading_(shell.body);
+      if (panelKeyHandler && global.removeEventListener) {
+        global.removeEventListener("keydown", panelKeyHandler);
+      }
+      panelKeyHandler = function (ev) {
+        if (!panelOpen) return;
+        if (ev && (ev.key === "Escape" || ev.key === "Esc")) closeProgressPanel();
+      };
+      if (global.addEventListener) global.addEventListener("keydown", panelKeyHandler);
+      loadPanelProgress_(fetchGen, snap);
+      if (shell.dialog && shell.dialog.focus) shell.dialog.focus();
+    } catch (ignore) {}
+  }
+
+  function closeProgressPanel() {
+    try {
+      panelOpen = false;
+      panelFetchGen += 1;
+      if (panelKeyHandler && global.removeEventListener) {
+        global.removeEventListener("keydown", panelKeyHandler);
+        panelKeyHandler = null;
+      }
+      if (panelRootEl) {
+        panelRootEl.hidden = true;
+        panelRootEl.setAttribute("aria-hidden", "true");
+        clear_(panelRootEl);
+      }
+      panelBodyEl = null;
+    } catch (ignore) {}
+  }
+
   function setBusy_(on) {
     if (!rootEl) return;
     var buttons = rootEl.querySelectorAll("button");
@@ -917,7 +2510,10 @@
     savePack: savePack,
     packReady: packReady,
     progressError: progressError,
-    idKey: idKey
+    idKey: idKey,
+    openProgressPanel: openProgressPanel,
+    closeProgressPanel: closeProgressPanel,
+    setPanelRowsProvider: setPanelRowsProvider
   };
 
   if (global.MRJ_AUTH_TEST_MODE) {
@@ -927,10 +2523,55 @@
       send: send_,
       sessionRejected: sessionRejected_,
       fetchAllProgress: fetchAllProgress_,
+      fetchPanelProgress: fetchPanelProgress_,
       retryProgressInBackground: retryProgressInBackground_,
       progressBody: progressBody_,
+      scoreProgramsForApp: scoreProgramsForApp_,
+      filterProgressForApp: filterProgressForApp_,
+      rowPassesItemFilter: rowPassesItemFilter_,
+      panelAppKey: panelAppKey_,
+      chipDisabled: chipDisabled_,
+      updateStudentChip: updateStudentChip_,
+      adjustChipPosition: adjustChipPosition_,
+      mergeProviderRows: mergeProviderRows_,
+      collapseServerRowsByItemId: collapseServerRowsByItemId_,
+      loadPlace: loadPlace_,
+      scheduleChipLayout: scheduleChipLayout_,
+      setChipLayoutLastRun: function (t) {
+        chipLayoutLastRun = t;
+      },
+      chipTrailingPending: function () {
+        return !!chipLayoutTrailingTimer;
+      },
+      applyStudentChrome: applyStudentChrome_,
+      findNamePill: findNamePill_,
+      findOwnRecord: findOwnRecord_,
+      resetChipIdleMetrics: function () {
+        chipLayoutRunCount = 0;
+        chipObserverNotifyCount = 0;
+        chipObserverIgnoredCount = 0;
+        chipDomWriteCount = 0;
+        chipIdleMutationCount = 0;
+      },
+      getChipIdleMetrics: function () {
+        return {
+          layoutRuns: chipLayoutRunCount,
+          observerNotifies: chipObserverNotifyCount,
+          observerIgnored: chipObserverIgnoredCount,
+          domWrites: chipDomWriteCount,
+          chipMutations: chipIdleMutationCount
+        };
+      },
+      getChipBodySlotPx: function () {
+        return chipBodySlotPx_;
+      },
+      computeChipMarginLayout: function (compact) {
+        return computeChipMarginLayout_(compact);
+      },
       REQUEST_TIMEOUT_MS: REQUEST_TIMEOUT_MS,
-      AUTH_VERSION: AUTH_VERSION
+      AUTH_VERSION: AUTH_VERSION,
+      APP_SCORE_PROGRAM_MAP: APP_SCORE_PROGRAM_MAP,
+      DAY2_PACK_ITEM_RE: DAY2_PACK_ITEM_RE
     };
   }
 

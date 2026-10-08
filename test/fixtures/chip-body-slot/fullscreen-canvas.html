@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en" style="height: 100vh; overflow: hidden">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>fullscreen canvas</title>
+    <link rel="stylesheet" href="/mrj-auth.css" />
+    <style>
+      html,
+      body {
+        height: 100vh;
+        overflow: hidden;
+        margin: 0;
+      }
+      canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas width="390" height="844"></canvas>
+    <script>
+      globalThis.MRJ_AUTH_TEST_MODE = true;
+    </script>
+    <script src="/mrj-auth.js"></script>
+    <script src="/mrj-auth-boot.js" data-mrj-app="chip-body-slot-fullscreen"></script>
+  </body>
+</html>

@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>score ticker</title>
+    <link rel="stylesheet" href="/mrj-auth.css" />
+    <style>
+      body {
+        margin: 0;
+        font-family: system-ui, sans-serif;
+        padding: 12rem 1rem 1rem;
+      }
+      .score-hud {
+        position: fixed;
+        left: 1rem;
+        top: 5rem;
+        font-size: 1.1rem;
+        font-weight: 700;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="score-hud points" id="score">0 pts</div>
+    <p>Main game area below the HUD.</p>
+    <script>
+      globalThis.MRJ_AUTH_TEST_MODE = true;
+      setInterval(function () {
+        var el = document.getElementById("score");
+        if (el) el.textContent = (Date.now() % 1000) + " pts";
+      }, 100);
+    </script>
+    <script src="/mrj-auth.js"></script>
+    <script src="/mrj-auth-boot.js" data-mrj-app="chip-body-slot-ticker"></script>
+  </body>
+</html>

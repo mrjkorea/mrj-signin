@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>list under header</title>
+    <link rel="stylesheet" href="/mrj-auth.css" />
+    <style>
+      body {
+        margin: 0;
+        font-family: system-ui, sans-serif;
+      }
+      .app-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 0.55rem 0.75rem;
+      }
+      .unit-btn {
+        display: block;
+        width: 100%;
+        box-sizing: border-box;
+        margin: 0.5rem 0 0;
+        padding: 1rem;
+        font-size: 1rem;
+      }
+    </style>
+  </head>
+  <body>
+    <header class="app-header">
+      <h1 style="margin: 0; font-size: 1.1rem">Workbook</h1>
+    </header>
+    <button type="button" class="unit-btn">Unit 1</button>
+    <button type="button" class="unit-btn">Unit 2</button>
+    <script>
+      globalThis.MRJ_AUTH_TEST_MODE = true;
+    </script>
+    <script src="/mrj-auth.js"></script>
+    <script src="/mrj-auth-boot.js" data-mrj-app="chip-body-slot-list"></script>
+  </body>
+</html>

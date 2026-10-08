@@ -321,3 +321,164 @@ html.mrj-auth-locked body {
     padding: 1.4rem 1.3rem 1.5rem;
   }
 }
+
+/* Fixed student chip — visible on every signed-in app page */
+.mrj-auth-chip {
+  position: fixed;
+  top: calc(0.55rem + env(safe-area-inset-top, 0px));
+  right: calc(0.55rem + env(safe-area-inset-right, 0px));
+  z-index: 2147482000;
+  max-width: min(12rem, 42vw);
+  padding: 0.45rem 0.75rem;
+  border: 2px solid #241c16;
+  border-radius: 999px;
+  background: #fffaf3;
+  color: #241c16;
+  font-family: "Atkinson Hyperlegible", system-ui, sans-serif;
+  font-size: 0.95rem;
+  font-weight: 700;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(36, 28, 22, 0.12);
+}
+
+.mrj-auth-chip:focus-visible {
+  outline: 3px solid #e2a122;
+  outline-offset: 2px;
+}
+
+.mrj-auth-chip-compact {
+  max-width: 40vw;
+  font-size: 0.85rem;
+  padding: 0.35rem 0.55rem;
+}
+
+.mrj-auth-panel-cap {
+  margin: 0 0 0.65rem;
+  font-size: 0.92rem;
+  line-height: 1.35;
+  opacity: 0.85;
+}
+
+.mrj-auth-panel-root {
+  position: fixed;
+  inset: 0;
+  z-index: 2147482500;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: calc(0.75rem + env(safe-area-inset-top, 0px)) 0.75rem 1rem;
+  overflow: auto;
+}
+
+.mrj-auth-panel-root[hidden] {
+  display: none !important;
+}
+
+.mrj-auth-panel-backdrop {
+  position: fixed;
+  inset: 0;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  background: rgba(36, 28, 22, 0.45);
+  cursor: pointer;
+}
+
+.mrj-auth-panel {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 28rem;
+  max-height: min(85vh, 36rem);
+  display: flex;
+  flex-direction: column;
+  margin-top: 0.5rem;
+  border: 3px solid #241c16;
+  border-radius: 1rem;
+  background: #f3eadc;
+  color: #241c16;
+  box-shadow: 0 18px 40px rgba(36, 28, 22, 0.2);
+  font-family: "Atkinson Hyperlegible", Palatino, Georgia, serif;
+}
+
+.mrj-auth-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.85rem 1rem 0.65rem;
+  border-bottom: 2px solid rgba(36, 28, 22, 0.12);
+}
+
+.mrj-auth-panel-title {
+  margin: 0;
+  font-family: Fraunces, Palatino, Georgia, serif;
+  font-size: 1.35rem;
+  font-weight: 700;
+}
+
+.mrj-auth-panel-close {
+  min-width: 2.5rem;
+  min-height: 2.5rem;
+  padding: 0;
+  border: 2px solid #241c16;
+  border-radius: 0.65rem;
+  background: #fffaf3;
+  font-size: 1.5rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.mrj-auth-panel-body {
+  padding: 0.75rem 1rem 1rem;
+  overflow: auto;
+}
+
+.mrj-auth-panel-summary {
+  margin: 0 0 0.75rem;
+  font-weight: 700;
+  font-size: 1rem;
+}
+
+.mrj-auth-panel-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.mrj-auth-panel-row {
+  margin: 0 0 0.55rem;
+  padding: 0.7rem 0.75rem;
+  background: #fffaf3;
+  border: 2px solid #241c16;
+  border-radius: 0.75rem;
+  font-size: 0.98rem;
+}
+
+.mrj-auth-panel-row span {
+  display: block;
+}
+
+.mrj-auth-panel-item-id {
+  margin-top: 0.15rem;
+  font-size: 0.82rem;
+  font-weight: 400;
+  opacity: 0.75;
+}
+
+.mrj-auth-panel-score {
+  margin-top: 0.25rem;
+  font-size: 0.92rem;
+}
+
+.mrj-auth-panel-foot {
+  margin-top: 0.85rem;
+}
+
+.mrj-auth-panel-foot .mrj-auth-signout {
+  width: 100%;
+}
