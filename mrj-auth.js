@@ -1506,7 +1506,7 @@
   }
 
   function scheduleChipLayout_() {
-    if (!chipEl || chipEl.hidden) return;
+    if (!chipEl || !chipLayoutAllowed_()) return;
     var now = Date.now();
     var since = now - chipLayoutLastRun;
     if (since >= 500) {
@@ -1691,17 +1691,24 @@
     var extraTop = 0;
     var maxIter = 16;
     var overCap = false;
-    var lastClearMargin = null;
+    var lastControlClearMargin = null;
+    var lastFullClearMargin = null;
     var baseRect = chipLayoutRectWithMargin_(0);
-    if (chipMarginLandingClear_(baseRect)) {
+    var baseLandingClear = chipMarginLandingClear_(baseRect);
+    var baseBump = chipMarginBumpForOverlaps_(baseRect, compact);
+    if (baseLandingClear && baseBump <= 0) {
       return { marginTop: "", hide: false };
     }
     while (maxIter-- > 0) {
       var trialRect = chipLayoutRectWithMargin_(extraTop);
-      if (chipMarginLandingClear_(trialRect) && chipMarginTopFitsViewport_(trialRect)) {
-        lastClearMargin = extraTop;
-      }
       var bump = chipMarginBumpForOverlaps_(trialRect, compact);
+      if (chipMarginLandingClear_(trialRect) && chipMarginTopFitsViewport_(trialRect)) {
+        lastControlClearMargin = extraTop;
+        if (bump <= 0) {
+          lastFullClearMargin = extraTop;
+          break;
+        }
+      }
       if (bump <= 0) break;
       extraTop += bump;
       if (extraTop > maxMarginPx) {
@@ -1714,23 +1721,29 @@
         break;
       }
     }
-    if (lastClearMargin != null) {
+    if (lastFullClearMargin == null) {
+      var finalRect = chipLayoutRectWithMargin_(extraTop);
+      var finalBump = chipMarginBumpForOverlaps_(finalRect, compact);
+      if (chipMarginLandingClear_(finalRect) && chipMarginTopFitsViewport_(finalRect)) {
+        lastControlClearMargin = extraTop;
+        if (finalBump <= 0) {
+          lastFullClearMargin = extraTop;
+        }
+      }
+    }
+    if (lastFullClearMargin != null) {
       return {
-        marginTop: lastClearMargin > 0 ? lastClearMargin + "px" : "",
+        marginTop: lastFullClearMargin > 0 ? lastFullClearMargin + "px" : "",
         hide: false
       };
     }
-    if (overCap || extraTop > maxMarginPx) {
-      if (!chipMarginLandingClear_(baseRect)) {
-        return { marginTop: "", hide: true };
-      }
-      return { marginTop: "", hide: false };
+    if ((overCap || extraTop > maxMarginPx) && lastControlClearMargin != null) {
+      return {
+        marginTop: lastControlClearMargin > 0 ? lastControlClearMargin + "px" : "",
+        hide: false
+      };
     }
-    var finalRect = chipLayoutRectWithMargin_(extraTop);
-    if (chipMarginLandingClear_(finalRect)) {
-      return { marginTop: extraTop > 0 ? extraTop + "px" : "", hide: false };
-    }
-    if (!chipMarginLandingClear_(baseRect)) {
+    if (!baseLandingClear) {
       return { marginTop: "", hide: true };
     }
     return { marginTop: "", hide: false };
@@ -1763,15 +1776,23 @@
       var tag = (node.tagName || "").toLowerCase();
       var isHeading = tag.length === 2 && tag.charAt(0) === "h" && tag.charAt(1) >= "1" && tag.charAt(1) <= "6";
       var cls = node.className && String(node.className).toLowerCase();
+      var id = node.id && String(node.id).toLowerCase();
+      var hudLike =
+        (id && (id === "lf-left" || id.indexOf("lf-") === 0)) ||
+        (cls &&
+          (cls.indexOf("hud") !== -1 ||
+            cls.indexOf("score") !== -1 ||
+            cls.indexOf("points") !== -1));
       var titleLike =
         cls &&
         (cls.indexOf("title") !== -1 ||
           cls.indexOf("heading") !== -1 ||
           cls.indexOf("subtitle") !== -1 ||
           cls.indexOf("hero") !== -1 ||
-          cls.indexOf("greeting") !== -1 ||
-          cls.indexOf("points") !== -1);
-      if (!isHeading && tag !== "p" && tag !== "legend" && tag !== "header" && !titleLike) return false;
+          cls.indexOf("greeting") !== -1);
+      if (!isHeading && tag !== "p" && tag !== "legend" && tag !== "header" && !titleLike && !hudLike) {
+        return false;
+      }
       var r = node.getBoundingClientRect();
       if (!r || r.width < 2 || r.height < 2) return false;
       var vh = global.innerHeight || 800;
@@ -1789,7 +1810,7 @@
     var out = [];
     if (!compact || !global.document || !global.document.querySelectorAll) return out;
     var nodes = global.document.querySelectorAll(
-      "header, h1, h2, h3, h4, h5, h6, p, legend, [class*='title'], [class*='heading'], [class*='subtitle'], [class*='hero'], [class*='greeting'], [class*='points']"
+      "header, h1, h2, h3, h4, h5, h6, p, legend, [class*='title'], [class*='heading'], [class*='subtitle'], [class*='hero'], [class*='greeting'], [class*='points'], [class*='hud'], [class*='score'], #lf-left, [id^='lf-']"
     );
     for (var i = 0; i < nodes.length; i++) {
       if (isChipTextObstacle_(nodes[i], compact)) out.push(nodes[i]);
@@ -2025,6 +2046,7 @@
     if (!chipLayoutAllowed_()) return;
     chipLayoutRunCount += 1;
     try {
+      if (chipEl.hidden) chipEl.hidden = false;
       var vw = global.innerWidth || 800;
       var compact = vw < 480;
       var offsets = chipOffsetStyles_();

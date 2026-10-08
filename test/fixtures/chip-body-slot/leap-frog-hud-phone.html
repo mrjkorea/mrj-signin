@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>leap frog HUD phone fixture</title>
+    <link rel="stylesheet" href="/mrj-auth.css" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        font-family: system-ui, sans-serif;
+        background: #1a3a2a;
+      }
+      #lf-left {
+        position: fixed;
+        top: 10px;
+        right: 88px;
+        z-index: 5;
+        padding: 0.35rem 0.55rem;
+        font-size: 0.85rem;
+        font-weight: 600;
+        color: #fff;
+        background: rgba(0, 0, 0, 0.35);
+        border-radius: 0.35rem;
+        pointer-events: none;
+      }
+      canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="lf-left">0/5 right</div>
+    <canvas width="390" height="844" aria-hidden="true"></canvas>
+    <script>
+      globalThis.MRJ_AUTH_TEST_MODE = true;
+    </script>
+    <script src="/mrj-auth.js"></script>
+    <script src="/mrj-auth-boot.js" data-mrj-app="leap-frog"></script>
+  </body>
+</html>

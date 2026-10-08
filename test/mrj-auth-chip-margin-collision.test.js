@@ -10,6 +10,7 @@ const { installChipIdleRoutes } = require("./helpers/chip-idle-routes");
 const ROOT = path.join(__dirname, "..");
 const DECODABLE_FIXTURE = "/test/fixtures/chip-body-slot/decodable-library.html";
 const DAY3_FIXTURE = "/test/fixtures/chip-body-slot/day3-workbook-phone.html";
+const LEAP_FROG_HUD_FIXTURE = "/test/fixtures/chip-body-slot/leap-frog-hud-phone.html";
 
 async function openSignedIn(page, server, fixturePath, width, height, waitGrid) {
   await page.setViewportSize({ width, height });
@@ -30,8 +31,8 @@ async function openSignedIn(page, server, fixturePath, width, height, waitGrid) 
   await page.waitForTimeout(600);
 }
 
-async function readChipState(page) {
-  return page.evaluate(() => {
+async function readChipState(page, hudSelector) {
+  return page.evaluate((hudSel) => {
     const chip = document.getElementById("mrj-auth-student-chip");
     if (!chip) return { missing: true };
     const cr = chip.getBoundingClientRect();
@@ -59,6 +60,15 @@ async function readChipState(page) {
           overlaps.push(el.tagName + (el.id ? "#" + el.id : ""));
         }
       }
+      if (hudSel) {
+        const hud = document.querySelector(hudSel);
+        if (hud) {
+          const r = hud.getBoundingClientRect();
+          const hit =
+            cr.left < r.right && cr.right > r.left && cr.top < r.bottom && cr.bottom > r.top;
+          if (hit) overlaps.push("hud#" + hudSel);
+        }
+      }
     }
     return {
       hidden: chip.hidden,
@@ -67,10 +77,32 @@ async function readChipState(page) {
       onScreen: !chip.hidden && cr.top >= -2 && cr.bottom <= vh - 8,
       overlaps
     };
-  });
+  }, hudSelector || "");
+}
+
+async function readChipStateWithHud(page) {
+  return readChipState(page, "#lf-left");
 }
 
 describe("chip marginTop collision", () => {
+  it("leap-frog-like HUD phone clears score pill with marginTop", { timeout: 120000 }, async () => {
+    const server = await startFixtureServer(ROOT);
+    const browser = await chromium.launch();
+    try {
+      const page = await browser.newPage();
+      await openSignedIn(page, server, LEAP_FROG_HUD_FIXTURE, 390, 844, false);
+      const state = await readChipStateWithHud(page);
+      console.log("LEAP_FROG_HUD_390", JSON.stringify(state));
+      assert.equal(state.hidden, false);
+      assert.ok(state.marginTop >= 30, "marginTop px=" + state.marginTop);
+      assert.equal(state.overlaps.length, 0);
+      assert.equal(state.onScreen, true);
+    } finally {
+      await browser.close();
+      await server.close();
+    }
+  });
+
   it("day3-like phone layout clears Records with ~92px marginTop", { timeout: 120000 }, async () => {
     const server = await startFixtureServer(ROOT);
     const browser = await chromium.launch();
