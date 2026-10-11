@@ -5,7 +5,9 @@ const assert = require("node:assert/strict");
 const { loadMrjAuth } = require("./helpers/load-mrj-auth");
 
 const TEST_ID = "zz_test_mrjmetrics";
+const OTHER_TEST_ID = "zz_test_mrjmetrics_alt";
 const OUTBOX_KEY = "mrj.auth.noteOutbox.zz_test_mrjmetrics";
+const OTHER_OUTBOX_KEY = "mrj.auth.noteOutbox.zz_test_mrjmetrics_alt";
 
 function jsonResponse(obj) {
   return Promise.resolve({ text: () => Promise.resolve(JSON.stringify(obj)) });
@@ -197,6 +199,43 @@ describe("noteScore localDate default and outbox", () => {
     assert.equal(raw.indexOf("token"), -1);
     const entry = JSON.parse(raw)[0];
     assert.equal(entry.token, undefined);
+  });
+
+  it("failed noteScore during student switch queues only under the starter id", async () => {
+    let releaseNote;
+    const holdNote = new Promise((resolve) => {
+      releaseNote = resolve;
+    });
+
+    const { auth, storage } = loadMrjAuth((url, opts) => {
+      const b = JSON.parse(opts.body);
+      if (b.action === "note_score") {
+        return holdNote.then(() => jsonResponse({ ok: false, error: "network" }));
+      }
+      return jsonResponse({ ok: false, error: "bad_action" });
+    });
+
+    auth._test.finish(TEST_ID, "tok-a", []);
+    await new Promise((r) => setTimeout(r, 50));
+
+    const pending = auth.noteScore({
+      program: "word-master",
+      itemId: "book:race:quiz",
+      scoreValue: 6,
+      scoreMax: 10,
+      scorePct: 60
+    });
+
+    auth.signOut();
+    auth._test.finish(OTHER_TEST_ID, "tok-b", []);
+    releaseNote();
+    await pending;
+    await new Promise((r) => setTimeout(r, 3500));
+
+    assert.ok(storage[OUTBOX_KEY]);
+    assert.equal(JSON.parse(storage[OUTBOX_KEY]).length, 1);
+    assert.equal(JSON.parse(storage[OUTBOX_KEY])[0].itemId, "book:race:quiz");
+    assert.equal(storage[OTHER_OUTBOX_KEY], undefined);
   });
 
   it("bad_token on flush does not retry in a loop", async () => {

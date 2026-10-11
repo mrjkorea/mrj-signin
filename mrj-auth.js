@@ -7,7 +7,7 @@
 (function (global) {
   "use strict";
 
-  var AUTH_VERSION = "20261012-savefix-1.4.3";
+  var AUTH_VERSION = "20261012-savefix-1.4.4";
   var ENDPOINT = "https://script.google.com/macros/s/AKfycbwtJTUO3gbcMrlAwsn1feWxyp7Rw2cxpfe1bOT9v2rxmQHa2Tlc6pFNWAjU6ZAdlD6kFQ/exec";
   var SESSION_KEY = "mrj.auth.session";
   var NOTE_OUTBOX_PREFIX = "mrj.auth.noteOutbox.";
@@ -2575,9 +2575,9 @@
     return out;
   }
 
-  function enqueueNoteScore_(entry) {
-    if (!state.id) return;
-    var studentKey = rules.idKey(state.id);
+  function enqueueNoteScore_(studentKey, entry) {
+    studentKey = studentKey == null ? "" : String(studentKey);
+    if (!studentKey) return;
     var list = readNoteOutbox_(studentKey);
     var ik = noteItemKey_(entry.program, entry.itemId);
     var next = [];
@@ -2647,11 +2647,14 @@
   function noteScore(fields) {
     fields = fields || {};
     if (!state.id || !state.token) return Promise.resolve({ ok: false, error: "bad_token" });
+    var snap = captureSession_();
+    var studentKey = rules.idKey(snap.id);
+    if (!snap.id || !snap.token) return Promise.resolve({ ok: false, error: "bad_token" });
     var localDate = fields.localDate || localDate_();
     var payload = {
       action: "note_score",
-      id: state.id,
-      token: state.token,
+      id: snap.id,
+      token: snap.token,
       program: fields.program || "",
       itemId: fields.itemId || "",
       scoreValue: fields.scoreValue,
@@ -2659,40 +2662,41 @@
       scorePct: fields.scorePct,
       localDate: localDate
     };
+    function queueFailed_(errorCode) {
+      var entry = {
+        program: payload.program,
+        itemId: payload.itemId,
+        scoreValue: payload.scoreValue,
+        scoreMax: payload.scoreMax,
+        scorePct: payload.scorePct,
+        localDate: localDate,
+        at: Date.now()
+      };
+      if (sessionMatches_(snap)) {
+        enqueueNoteScore_(studentKey, entry);
+        return { ok: false, error: errorCode, queued: true };
+      }
+      enqueueNoteScore_(studentKey, entry);
+      return { ok: false, error: errorCode };
+    }
     return post_(payload)
       .then(function (data) {
         if (!data) data = { ok: false, error: "network" };
         var code = data.error == null ? "" : String(data.error);
         if (data.ok) {
-          recordNoteSuccess_(rules.idKey(state.id), payload.program, payload.itemId);
-          flushNoteOutbox_(state.id);
+          if (sessionMatches_(snap)) {
+            recordNoteSuccess_(studentKey, payload.program, payload.itemId);
+            flushNoteOutbox_(snap.id);
+          }
           return data;
         }
         if (isNoteRetryableError_(code)) {
-          enqueueNoteScore_({
-            program: payload.program,
-            itemId: payload.itemId,
-            scoreValue: payload.scoreValue,
-            scoreMax: payload.scoreMax,
-            scorePct: payload.scorePct,
-            localDate: localDate,
-            at: Date.now()
-          });
-          return { ok: false, error: code, queued: true };
+          return queueFailed_(code);
         }
         return data;
       })
       .catch(function () {
-        enqueueNoteScore_({
-          program: payload.program,
-          itemId: payload.itemId,
-          scoreValue: payload.scoreValue,
-          scoreMax: payload.scoreMax,
-          scorePct: payload.scorePct,
-          localDate: localDate,
-          at: Date.now()
-        });
-        return { ok: false, error: "network", queued: true };
+        return queueFailed_("network");
       });
   }
 
