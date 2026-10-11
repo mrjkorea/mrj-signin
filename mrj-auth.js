@@ -7,9 +7,11 @@
 (function (global) {
   "use strict";
 
-  var AUTH_VERSION = "20261007-progress-1.4.2";
+  var AUTH_VERSION = "20261012-savefix-1.4.3";
   var ENDPOINT = "https://script.google.com/macros/s/AKfycbwtJTUO3gbcMrlAwsn1feWxyp7Rw2cxpfe1bOT9v2rxmQHa2Tlc6pFNWAjU6ZAdlD6kFQ/exec";
   var SESSION_KEY = "mrj.auth.session";
+  var NOTE_OUTBOX_PREFIX = "mrj.auth.noteOutbox.";
+  var NOTE_OUTBOX_MAX = 300;
   var REQUEST_TIMEOUT_MS = 30000;
 
   var MESSAGES = {
@@ -153,6 +155,9 @@
   };
   var viewGen = 0;
   var sessionGen = 0;
+  var onlineListenerInstalled = false;
+  var noteSuccessAt_ = {};
+  var noteOutboxFlushChain = null;
   var chipEl = null;
   var panelRootEl = null;
   var panelBodyEl = null;
@@ -303,6 +308,14 @@
           }).catch(function () {});
         }
       } catch (ignore) {}
+    });
+  }
+
+  function installOnlineListener_() {
+    if (onlineListenerInstalled || !global.addEventListener) return;
+    onlineListenerInstalled = true;
+    global.addEventListener("online", function () {
+      if (state.id) flushNoteOutbox_(state.id);
     });
   }
 
@@ -568,6 +581,7 @@
 
   function mount(el, opts) {
     installStorageListener_();
+    installOnlineListener_();
     var node = resolveEl_(el);
     if (!node) return;
     rootEl = node;
@@ -1197,6 +1211,7 @@
     renderSignedIn_();
     updateStudentChip_();
     dispatchReady_();
+    if (state.id) flushNoteOutbox_(state.id);
   }
 
   function progressError() {
@@ -2478,10 +2493,162 @@
     for (var i = 0; i < buttons.length; i++) buttons[i].disabled = on;
   }
 
+  function localDate_(when) {
+    var d = when ? new Date(when) : new Date();
+    var y = d.getFullYear();
+    var m = d.getMonth() + 1;
+    var day = d.getDate();
+    return (
+      y +
+      "-" +
+      (m < 10 ? "0" : "") +
+      m +
+      "-" +
+      (day < 10 ? "0" : "") +
+      day
+    );
+  }
+
+  function noteOutboxStorageKey_(studentId) {
+    return NOTE_OUTBOX_PREFIX + rules.idKey(studentId);
+  }
+
+  function noteItemKey_(program, itemId) {
+    return String(program || "") + "\0" + String(itemId || "");
+  }
+
+  function readNoteOutbox_(studentKey) {
+    try {
+      var raw = global.localStorage.getItem(NOTE_OUTBOX_PREFIX + studentKey);
+      if (!raw) return [];
+      var arr = JSON.parse(raw);
+      return Array.isArray(arr) ? arr : [];
+    } catch (ignore) {
+      return [];
+    }
+  }
+
+  function writeNoteOutbox_(studentKey, entries) {
+    try {
+      if (!entries || !entries.length) {
+        global.localStorage.removeItem(NOTE_OUTBOX_PREFIX + studentKey);
+        return;
+      }
+      global.localStorage.setItem(NOTE_OUTBOX_PREFIX + studentKey, JSON.stringify(entries));
+    } catch (ignore) {}
+  }
+
+  function isNoteRetryableError_(code) {
+    return (
+      code === "network" ||
+      code === "timeout" ||
+      code === "server_busy" ||
+      code === "server"
+    );
+  }
+
+  function isNoteNoQueueError_(code) {
+    return (
+      code === "bad_token" ||
+      code === "user_does_not_exist" ||
+      code === "stale_session"
+    );
+  }
+
+  function recordNoteSuccess_(studentKey, program, itemId) {
+    noteSuccessAt_[studentKey + "|" + noteItemKey_(program, itemId)] = Date.now();
+  }
+
+  function shouldDropOutboxEntry_(entry, studentKey) {
+    var k = studentKey + "|" + noteItemKey_(entry.program, entry.itemId);
+    var successAt = noteSuccessAt_[k];
+    return !!(successAt && successAt > entry.at);
+  }
+
+  function removeOutboxEntry_(list, entry) {
+    var out = [];
+    for (var i = 0; i < list.length; i++) {
+      var e = list[i];
+      if (e.at === entry.at && e.program === entry.program && e.itemId === entry.itemId) continue;
+      out.push(e);
+    }
+    return out;
+  }
+
+  function enqueueNoteScore_(entry) {
+    if (!state.id) return;
+    var studentKey = rules.idKey(state.id);
+    var list = readNoteOutbox_(studentKey);
+    var ik = noteItemKey_(entry.program, entry.itemId);
+    var next = [];
+    for (var i = 0; i < list.length; i++) {
+      if (noteItemKey_(list[i].program, list[i].itemId) !== ik) next.push(list[i]);
+    }
+    next.push(entry);
+    while (next.length > NOTE_OUTBOX_MAX) next.shift();
+    writeNoteOutbox_(studentKey, next);
+  }
+
+  function flushNoteOutboxInner_(studentKey) {
+    var snap = captureSession_();
+    function loop() {
+      if (!sessionMatches_(snap)) return Promise.resolve();
+      var list = readNoteOutbox_(studentKey);
+      while (list.length > 0 && shouldDropOutboxEntry_(list[0], studentKey)) {
+        list.shift();
+      }
+      if (!list.length) {
+        writeNoteOutbox_(studentKey, list);
+        return Promise.resolve();
+      }
+      writeNoteOutbox_(studentKey, list);
+      var entry = list[0];
+      if (!sessionMatches_(snap)) return Promise.resolve();
+      return post_({
+        action: "note_score",
+        id: snap.id,
+        token: snap.token,
+        program: entry.program,
+        itemId: entry.itemId,
+        scoreValue: entry.scoreValue,
+        scoreMax: entry.scoreMax,
+        scorePct: entry.scorePct,
+        localDate: entry.localDate || localDate_()
+      })
+        .then(function (data) {
+          if (!sessionMatches_(snap)) return;
+          var code = data && data.error != null ? String(data.error) : "";
+          if (data && data.ok) {
+            recordNoteSuccess_(studentKey, entry.program, entry.itemId);
+            var cur = removeOutboxEntry_(readNoteOutbox_(studentKey), entry);
+            writeNoteOutbox_(studentKey, cur);
+            return loop();
+          }
+          if (isNoteNoQueueError_(code) || isNoteRetryableError_(code)) return;
+          var cur2 = removeOutboxEntry_(readNoteOutbox_(studentKey), entry);
+          writeNoteOutbox_(studentKey, cur2);
+          return loop();
+        })
+        .catch(function () {});
+    }
+    return loop();
+  }
+
+  function flushNoteOutbox_(studentId) {
+    if (!studentId || !state.id || !state.token) return Promise.resolve();
+    if (rules.idKey(state.id) !== rules.idKey(studentId)) return Promise.resolve();
+    var studentKey = rules.idKey(studentId);
+    noteOutboxFlushChain = (noteOutboxFlushChain || Promise.resolve()).then(function () {
+      return flushNoteOutboxInner_(studentKey);
+    });
+    return noteOutboxFlushChain;
+  }
+
   function noteScore(fields) {
     fields = fields || {};
     if (!state.id || !state.token) return Promise.resolve({ ok: false, error: "bad_token" });
-    return post_({
+    var localDate = fields.localDate || localDate_();
+    var payload = {
       action: "note_score",
       id: state.id,
       token: state.token,
@@ -2490,10 +2657,43 @@
       scoreValue: fields.scoreValue,
       scoreMax: fields.scoreMax,
       scorePct: fields.scorePct,
-      localDate: fields.localDate || ""
-    }).catch(function () {
-      return { ok: false, error: "network" };
-    });
+      localDate: localDate
+    };
+    return post_(payload)
+      .then(function (data) {
+        if (!data) data = { ok: false, error: "network" };
+        var code = data.error == null ? "" : String(data.error);
+        if (data.ok) {
+          recordNoteSuccess_(rules.idKey(state.id), payload.program, payload.itemId);
+          flushNoteOutbox_(state.id);
+          return data;
+        }
+        if (isNoteRetryableError_(code)) {
+          enqueueNoteScore_({
+            program: payload.program,
+            itemId: payload.itemId,
+            scoreValue: payload.scoreValue,
+            scoreMax: payload.scoreMax,
+            scorePct: payload.scorePct,
+            localDate: localDate,
+            at: Date.now()
+          });
+          return { ok: false, error: code, queued: true };
+        }
+        return data;
+      })
+      .catch(function () {
+        enqueueNoteScore_({
+          program: payload.program,
+          itemId: payload.itemId,
+          scoreValue: payload.scoreValue,
+          scoreMax: payload.scoreMax,
+          scorePct: payload.scorePct,
+          localDate: localDate,
+          at: Date.now()
+        });
+        return { ok: false, error: "network", queued: true };
+      });
   }
 
   var api = {
@@ -2504,6 +2704,7 @@
     token: token,
     signOut: signOut,
     noteScore: noteScore,
+    localDate: localDate_,
     app: appProgram_,
     loadProgressForApp: loadProgressForApp,
     loadPack: loadPack,
@@ -2571,7 +2772,10 @@
       REQUEST_TIMEOUT_MS: REQUEST_TIMEOUT_MS,
       AUTH_VERSION: AUTH_VERSION,
       APP_SCORE_PROGRAM_MAP: APP_SCORE_PROGRAM_MAP,
-      DAY2_PACK_ITEM_RE: DAY2_PACK_ITEM_RE
+      DAY2_PACK_ITEM_RE: DAY2_PACK_ITEM_RE,
+      finish: finish_,
+      noteOutboxKey: noteOutboxStorageKey_,
+      readNoteOutbox: readNoteOutbox_
     };
   }
 
