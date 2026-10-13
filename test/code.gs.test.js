@@ -113,9 +113,9 @@ describe("Code.gs (vm)", () => {
     assert.equal(saved.maxChars, ctx.MAX_PROGRESS_TOTAL_CHARS);
   });
 
-  it("APP_VERSION is 1.4.1 for health/ping", () => {
+  it("APP_VERSION is 1.4.3 for health/ping", () => {
     const ctx = createGasContext();
-    assert.equal(ctx.APP_VERSION, "1.4.1");
+    assert.equal(ctx.APP_VERSION, "1.4.3");
   });
 
   it("save_pack stores and loads chunked progress without changing AppProgress columns", () => {

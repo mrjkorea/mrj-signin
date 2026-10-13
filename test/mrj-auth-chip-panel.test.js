@@ -21,7 +21,20 @@ function loginFetch(progressHandler) {
         progress: []
       });
     }
-    if (b.action === "progress") {
+    if (b.action === "progress" || b.action === "student_dashboard") {
+      if (b.action === "student_dashboard") {
+        return jsonResponse({
+          ok: true,
+          id: b.id,
+          token: b.token,
+          dashboard: {
+            completion: { units: [], overallPct: null, remaining: [] },
+            scoreTrend: [],
+            weakItems: [],
+            recentActivity: []
+          }
+        });
+      }
       return progressHandler(b);
     }
     return jsonResponse({ ok: false, error: "bad_action" });

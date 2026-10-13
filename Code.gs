@@ -6,7 +6,7 @@
  * Passwords are stored for an exact match and are never returned or logged.
  */
 var SPREADSHEET_ID = "1bpgekxlektvwpsef1PmIkxPiDuHrkVXFaAy-OmwqL5c";
-var APP_VERSION = "1.4.1";
+var APP_VERSION = "1.4.3";
 var ACCOUNTS_SHEET = "StudentAccounts";
 var SCORE_SHEET = "StudentScoreIndex";
 var METRICS_SHEET = "ClassroomMetrics";
@@ -23,6 +23,9 @@ var PACK_WRITE_BATCH_ROWS = 10; // <= ~400k chars per setValues call
 var METRICS_FALLBACK_TAIL = 12000;
 var BACKFILL_PROP = "backfill_score_index_cursor";
 var BACKFILL_TIME_BUDGET_MS = 270000;
+var WM_PACK_SHARD_PREFIX = "word-master@pack/";
+var TEACHER_IDS_PROP = "MRJ_TEACHER_IDS";
+var TEACHER_SECRET_PROP = "MRJ_TEACHER_SECRET";
 var METRICS_READ_BATCH = 2000;
 var FLUSH_LOCK_MS = 5000;
 
@@ -49,6 +52,11 @@ function doPost(e) {
     if (action === "note_score") return json_(noteScore_(body));
     if (action === "load_pack") return json_(loadPack_(body));
     if (action === "save_pack") return json_(savePack_(body));
+    if (action === "teacher_list_students") return json_(teacherListStudents_(body));
+    if (action === "teacher_student_snapshot") return json_(teacherStudentSnapshot_(body));
+    if (action === "student_dashboard") return json_(studentDashboard_(body));
+    if (action === "teacher_student_dashboard") return json_(teacherStudentDashboard_(body));
+    if (action === "teacher_app_roster") return json_(teacherAppRoster_(body));
     return json_({ ok: false, error: "bad_action", message: "Unknown action." });
   } catch (err) {
     return json_({ ok: false, error: "server", message: "Something went wrong." });
@@ -109,6 +117,7 @@ function login_(body) {
       token: tokenField
     });
     bustAccountCache_(key);
+    appendSignInDeviceMetric_(ss, key, existing.id_display, body);
     return {
       ok: true,
       error: "",
@@ -118,6 +127,597 @@ function login_(body) {
       progress: []
     };
   });
+}
+
+function parseTeacherIdsProperty_() {
+  var raw = "";
+  try {
+    raw = PropertiesService.getScriptProperties().getProperty(TEACHER_IDS_PROP);
+  } catch (ignore) {}
+  if (!raw || !String(raw).trim()) return [];
+  var parts = String(raw).split(/[,;\s]+/);
+  var out = [];
+  for (var i = 0; i < parts.length; i++) {
+    var k = idKey_(parts[i]);
+    if (k) out.push(k);
+  }
+  return out;
+}
+
+function getTeacherSecretProperty_() {
+  try {
+    var s = PropertiesService.getScriptProperties().getProperty(TEACHER_SECRET_PROP);
+    if (s == null || !String(s).trim()) return "";
+    return String(s);
+  } catch (ignore) {}
+  return "";
+}
+
+function isTeacherIdKey_(key) {
+  key = idKey_(key);
+  if (!key) return false;
+  var list = parseTeacherIdsProperty_();
+  if (!list.length) return false;
+  for (var i = 0; i < list.length; i++) {
+    if (list[i] === key) return true;
+  }
+  return false;
+}
+
+function requireTeacher_(gate, body) {
+  body = body || {};
+  if (!gate.ok) return gate;
+  var ids = parseTeacherIdsProperty_();
+  var secret = getTeacherSecretProperty_();
+  var given = body.teacher_secret != null ? String(body.teacher_secret) : "";
+  if (!ids.length && !secret) {
+    return {
+      ok: false,
+      error: "forbidden",
+      message: "Teacher access is not configured."
+    };
+  }
+  if (ids.length && isTeacherIdKey_(gate.id_key)) {
+    return gate;
+  }
+  if (secret && given === secret) {
+    return gate;
+  }
+  return { ok: false, error: "forbidden", message: "Teachers only." };
+}
+
+function teacherListStudents_(body) {
+  var gate = requireTeacher_(requireToken_(book_(), body, false), body);
+  if (!gate.ok) return gate;
+  var sheet = ensureAccounts_(book_());
+  var students = [];
+  if (sheet.getLastRow() >= 2) {
+    var values = sheet.getDataRange().getValues();
+    for (var i = 1; i < values.length; i++) {
+      var display = asString_(values[i][0]).trim();
+      var idKeyVal = asString_(values[i][1]).trim();
+      if (!display || !idKeyVal) continue;
+      students.push({ id: display, id_key: idKeyVal });
+    }
+  }
+  students.sort(function (a, b) {
+    return String(a.id).localeCompare(String(b.id), undefined, { sensitivity: "base" });
+  });
+  return { ok: true, error: "", students: students };
+}
+
+function packShardIdsFromShellJson_(mainJson) {
+  var obj;
+  try {
+    obj = JSON.parse(String(mainJson || "{}"));
+  } catch (ignore) {
+    return [];
+  }
+  if (!obj || typeof obj !== "object") return [];
+  if (Array.isArray(obj.packShardIds)) {
+    return obj.packShardIds.map(function (id) {
+      return asString_(id).trim();
+    }).filter(Boolean);
+  }
+  return [];
+}
+
+function readPackShardForProgram_(ss, idKey, packId) {
+  packId = asString_(packId).trim();
+  if (!packId) return null;
+  var program = WM_PACK_SHARD_PREFIX + packId;
+  var json = readPackJson_(ss, idKey, program);
+  if (!json) return null;
+  return { program: program, packId: packId, progress_json: json };
+}
+
+function mergePackJsonWithListedShards_(mainJson, shards) {
+  var base = {};
+  try {
+    base = JSON.parse(String(mainJson || "{}"));
+  } catch (ignore) {
+    base = {};
+  }
+  if (!base || typeof base !== "object") base = {};
+  if (!base.sets) base.sets = {};
+  if (!shards || !shards.length) return JSON.stringify(base);
+  for (var i = 0; i < shards.length; i++) {
+    var shard = shards[i];
+    if (!shard || !shard.progress_json) continue;
+    var pid = asString_(shard.packId).trim();
+    if (!pid && shard.program) {
+      pid = asString_(shard.program).slice(WM_PACK_SHARD_PREFIX.length);
+    }
+    try {
+      var obj = JSON.parse(String(shard.progress_json));
+      if (!obj || !obj.sets) continue;
+      if (pid && obj.sets[pid]) {
+        base.sets[pid] = obj.sets[pid];
+      }
+    } catch (ignore2) {}
+  }
+  return JSON.stringify(base);
+}
+
+function teacherStudentSnapshot_(body) {
+  var gate = requireTeacher_(requireToken_(book_(), body, false), body);
+  if (!gate.ok) return gate;
+  var target = idKey_(body.student || body.target || "");
+  if (!target) {
+    return { ok: false, error: "bad_student", message: "Missing student id." };
+  }
+  var program = textOrEmpty_(body.program).trim() || "word-master";
+  var ss = book_();
+  try {
+    var rows = loadProgressRowsWithFallback_(ss, target, program);
+    var page = pageProgressRows_(rows, 0, PROGRESS_MAX_LIMIT);
+    var packJson = readPackJson_(ss, target, program);
+    var packIds = packShardIdsFromShellJson_(packJson);
+    var shards = [];
+    var missingShards = [];
+    for (var si = 0; si < packIds.length; si++) {
+      var packId = packIds[si];
+      var loaded = readPackShardForProgram_(ss, target, packId);
+      if (loaded) {
+        shards.push(loaded);
+      } else {
+        missingShards.push(packId);
+      }
+    }
+    if (shards.length) {
+      packJson = mergePackJsonWithListedShards_(packJson, shards);
+    }
+    return {
+      ok: true,
+      error: "",
+      student: asString_(body.student || target),
+      program: program,
+      progress: page.progress,
+      total: page.total,
+      hasMore: page.hasMore,
+      progress_json: packJson,
+      incomplete: missingShards.length > 0,
+      missingShards: missingShards
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      error: "teacher_load_failed",
+      message: "Could not load student snapshot."
+    };
+  }
+}
+
+function parseDeviceFromBody_(body) {
+  body = body || {};
+  var d = body.device;
+  if (!d || typeof d !== "object") return null;
+  return {
+    type: asString_(d.type || d.deviceType).trim() || "unknown",
+    os: asString_(d.os).trim() || "unknown",
+    browser: asString_(d.browser).trim() || "unknown",
+    screenW: d.screenW != null ? d.screenW : d.width,
+    screenH: d.screenH != null ? d.screenH : d.height
+  };
+}
+
+function formatDeviceItemId_(device) {
+  if (!device) return "";
+  var type = asString_(device.type).slice(0, 24);
+  var os = asString_(device.os).slice(0, 32);
+  var browser = asString_(device.browser).slice(0, 32);
+  var w = +device.screenW;
+  var h = +device.screenH;
+  var screen = isFinite(w) && isFinite(h) && w > 0 && h > 0 ? String(w) + "x" + String(h) : "";
+  if (!screen) screen = "unknown";
+  return "device:" + type + "/" + os + "/" + browser + "/" + screen;
+}
+
+function metricsHeaderMap_(sheet) {
+  var lastCol = sheet.getLastColumn();
+  if (lastCol < 1) lastCol = 11;
+  var header = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  var map = {};
+  for (var c = 0; c < header.length; c++) map[String(header[c]).trim()] = c;
+  return { header: header, map: map };
+}
+
+function metricsRowFromFields_(header, map, fields) {
+  var row = [];
+  for (var c = 0; c < header.length; c++) row.push("");
+  var keys = Object.keys(fields || {});
+  for (var i = 0; i < keys.length; i++) {
+    var name = keys[i];
+    var idx = map[name];
+    if (idx == null) continue;
+    row[idx] = fields[name];
+  }
+  return row;
+}
+
+function appendSignInDeviceMetric_(ss, idKey, displayId, body) {
+  try {
+    var device = parseDeviceFromBody_(body);
+    if (!device) return;
+    var sheet = ss.getSheetByName(METRICS_SHEET);
+    if (!sheet) return;
+    var hm = metricsHeaderMap_(sheet);
+    if (!hm.map.event_kind && sheet.getLastRow() < 1) return;
+    var now = new Date();
+    var iso = now.toISOString();
+    var program = textOrEmpty_(body.client_app).trim() || textOrEmpty_(body.app).trim() || "mrj-signin";
+    var row = metricsRowFromFields_(hm.header, hm.map, {
+      event_kind: "sign_in",
+      session_id: "signin-" + asString_(displayId) + "-" + iso,
+      student_email: asString_(displayId),
+      student_id: "",
+      curriculum_program: program,
+      item_id: formatDeviceItemId_(device),
+      score_value: "",
+      score_max: "",
+      score_pct: "",
+      local_date: iso.slice(0, 10),
+      timestamp: iso
+    });
+    sheet.appendRow(row);
+  } catch (ignore) {}
+}
+
+function countLeafProgressDash_(node) {
+  var done = 0;
+  var total = 0;
+  if (node == null) return { done: done, total: total };
+  if (typeof node === "boolean") {
+    total = 1;
+    if (node) done = 1;
+    return { done: done, total: total };
+  }
+  if (typeof node === "number") {
+    total = 1;
+    if (node > 0) done = 1;
+    return { done: done, total: total };
+  }
+  if (typeof node !== "object") return { done: done, total: total };
+  var keys = Object.keys(node);
+  for (var i = 0; i < keys.length; i++) {
+    var k = keys[i];
+    if (k === "lastPlayedAt" || k === "v") continue;
+    var sub = countLeafProgressDash_(node[k]);
+    done += sub.done;
+    total += sub.total;
+  }
+  return { done: done, total: total };
+}
+
+function summarizePackSetsDash_(parsed) {
+  var sets = parsed && parsed.sets && typeof parsed.sets === "object" ? parsed.sets : {};
+  var units = [];
+  var keys = Object.keys(sets);
+  keys.sort();
+  for (var ui = 0; ui < keys.length; ui++) {
+    var id = keys[ui];
+    var counts = countLeafProgressDash_(sets[id]);
+    var pct = counts.total > 0 ? Math.round((counts.done / counts.total) * 100) : counts.done > 0 ? 100 : 0;
+    units.push({ id: id, label: id, done: counts.done, total: counts.total, pct: pct });
+  }
+  var doneAll = 0;
+  var totalAll = 0;
+  for (var j = 0; j < units.length; j++) {
+    doneAll += units[j].done;
+    totalAll += units[j].total;
+  }
+  var overallPct = totalAll > 0 ? Math.round((doneAll / totalAll) * 100) : units.length ? 0 : null;
+  var remaining = [];
+  for (var r = 0; r < units.length; r++) {
+    if (units[r].total > 0 && units[r].pct < 100) remaining.push(units[r].id);
+  }
+  return { units: units, overallPct: overallPct, remaining: remaining };
+}
+
+function parseScorePctDash_(row) {
+  if (!row) return null;
+  if (row.score_pct != null && row.score_pct !== "") {
+    var n = +row.score_pct;
+    if (isFinite(n)) return Math.max(0, Math.min(100, Math.round(n)));
+  }
+  var text = asString_(row.score || row.scoreText);
+  var m = text.match(/(\d+(?:\.\d+)?)\s*%/);
+  if (m) return Math.round(+m[1]);
+  var frac = text.match(/^(\d+)\s*\/\s*(\d+)/);
+  if (frac) {
+    var maxN = +frac[2];
+    if (maxN > 0) return Math.round((+frac[1] / maxN) * 100);
+  }
+  return null;
+}
+
+function normalizeDashRow_(row) {
+  return {
+    program: asString_(row.program).trim(),
+    item_id: asString_(row.item || row.item_id).trim(),
+    local_date: asString_(row.date || row.local_date).trim(),
+    score_pct: parseScorePctDash_(row)
+  };
+}
+
+function scoreTrendDash_(rows, limit) {
+  var lim = limit == null ? 40 : Math.max(1, parseInt(limit, 10) || 40);
+  var norm = [];
+  for (var i = 0; i < (rows || []).length; i++) {
+    var n = normalizeDashRow_(rows[i]);
+    if (n.item_id) norm.push(n);
+  }
+  norm.sort(function (a, b) {
+    return String(a.local_date).localeCompare(String(b.local_date));
+  });
+  var points = [];
+  for (var p = 0; p < norm.length; p++) {
+    if (norm[p].score_pct == null) continue;
+    points.push({
+      date: norm[p].local_date || "?",
+      pct: norm[p].score_pct,
+      item_id: norm[p].item_id
+    });
+  }
+  if (points.length > lim) return points.slice(points.length - lim);
+  return points;
+}
+
+function weakItemsDash_(rows, threshold) {
+  var t = threshold == null ? 70 : +threshold;
+  var byItem = {};
+  for (var i = 0; i < (rows || []).length; i++) {
+    var r = normalizeDashRow_(rows[i]);
+    if (!r.item_id || r.score_pct == null) continue;
+    var prev = byItem[r.item_id];
+    if (!prev || String(r.local_date).localeCompare(String(prev.local_date)) >= 0) {
+      byItem[r.item_id] = r;
+    }
+  }
+  var out = [];
+  var keys = Object.keys(byItem);
+  for (var k = 0; k < keys.length; k++) {
+    var row = byItem[keys[k]];
+    if (row.score_pct < t) out.push(row);
+  }
+  out.sort(function (a, b) {
+    return a.score_pct - b.score_pct;
+  });
+  if (out.length > 12) out = out.slice(0, 12);
+  return out;
+}
+
+function recentActivityDash_(rows, limit) {
+  var lim = limit == null ? 8 : Math.max(1, parseInt(limit, 10) || 8);
+  var norm = [];
+  for (var i = 0; i < (rows || []).length; i++) {
+    var n = normalizeDashRow_(rows[i]);
+    if (n.item_id) norm.push(n);
+  }
+  norm.sort(function (a, b) {
+    return String(b.local_date).localeCompare(String(a.local_date));
+  });
+  var out = [];
+  for (var j = 0; j < norm.length && j < lim; j++) {
+    out.push({
+      item_id: norm[j].item_id,
+      program: norm[j].program,
+      local_date: norm[j].local_date,
+      score_pct: norm[j].score_pct
+    });
+  }
+  return out;
+}
+
+function buildDashboardPayload_(packJson, progressRows) {
+  var parsed = {};
+  try {
+    parsed = JSON.parse(String(packJson || "{}"));
+  } catch (ignore) {
+    parsed = {};
+  }
+  var completion = summarizePackSetsDash_(parsed);
+  return {
+    completion: completion,
+    scoreTrend: scoreTrendDash_(progressRows, 40),
+    weakItems: weakItemsDash_(progressRows, 70),
+    recentActivity: recentActivityDash_(progressRows, 8)
+  };
+}
+
+function loadPackMergedForStudent_(ss, idKey, program) {
+  var packJson = readPackJson_(ss, idKey, program);
+  var packIds = packShardIdsFromShellJson_(packJson);
+  var shards = [];
+  var missingShards = [];
+  for (var si = 0; si < packIds.length; si++) {
+    var packId = packIds[si];
+    var loaded = readPackShardForProgram_(ss, idKey, packId);
+    if (loaded) shards.push(loaded);
+    else missingShards.push(packId);
+  }
+  if (shards.length) packJson = mergePackJsonWithListedShards_(packJson, shards);
+  return {
+    progress_json: packJson,
+    incomplete: missingShards.length > 0,
+    missingShards: missingShards
+  };
+}
+
+function listProgramsForStudent_(ss, idKey) {
+  var seen = {};
+  var packSheet = ss.getSheetByName(PACK_SHEET);
+  if (packSheet && packSheet.getLastRow() >= 2) {
+    var values = packSheet.getDataRange().getValues();
+    for (var i = 1; i < values.length; i++) {
+      if (asString_(values[i][0]) !== idKey) continue;
+      var prog = asString_(values[i][1]).trim();
+      if (!prog || prog.indexOf("@") !== -1) continue;
+      seen[prog] = 1;
+    }
+  }
+  var scoreRows = readScoreIndex_(ss, idKey);
+  for (var j = 0; j < scoreRows.length; j++) {
+    var p = asString_(scoreRows[j].program).trim();
+    if (p) seen[p] = 1;
+  }
+  var out = Object.keys(seen);
+  out.sort();
+  return out;
+}
+
+function programDisplayNameDash_(program) {
+  var map = {
+    "word-master": "Word Master",
+    greenzap: "Green Zap",
+    "skill-builder": "Skill Builder",
+    "skill-builder-g1": "Skill Builder G1",
+    pronounce: "Pronounce",
+    "pronounce-whistle": "Pronounce Whistle",
+    "day2-words": "Day 2 Words",
+    "day3-workbook": "Day 3 Workbook"
+  };
+  return map[program] || program;
+}
+
+function compactAppSummaryDash_(program, packJson, progressRows) {
+  var dash = buildDashboardPayload_(packJson, progressRows);
+  var lastActive = "";
+  if (dash.recentActivity.length) lastActive = dash.recentActivity[0].local_date || "";
+  var scores = [];
+  for (var i = 0; i < (progressRows || []).length; i++) {
+    var n = normalizeDashRow_(progressRows[i]);
+    if (n.score_pct != null) scores.push(n);
+  }
+  var avgPct = null;
+  if (scores.length) {
+    var sum = 0;
+    for (var s = 0; s < scores.length; s++) sum += scores[s].score_pct;
+    avgPct = Math.round(sum / scores.length);
+  }
+  return {
+    program: program,
+    label: programDisplayNameDash_(program),
+    completionPct: dash.completion.overallPct,
+    unitCount: dash.completion.units.length,
+    scoreCount: scores.length,
+    avgScorePct: avgPct,
+    lastActive: lastActive,
+    weakCount: dash.weakItems.length
+  };
+}
+
+function studentDashboard_(body) {
+  var gate = requireToken_(book_(), body, false);
+  if (!gate.ok) return gate;
+  var program = textOrEmpty_(body.program).trim() || textOrEmpty_(body.app).trim();
+  if (!program) {
+    return { ok: false, error: "bad_program", message: "Missing app id." };
+  }
+  var ss = book_();
+  try {
+    var rows = loadProgressRowsWithFallback_(ss, gate.id_key, program);
+    var pack = loadPackMergedForStudent_(ss, gate.id_key, program);
+    return {
+      ok: true,
+      error: "",
+      id: gate.id,
+      program: program,
+      dashboard: buildDashboardPayload_(pack.progress_json, rows),
+      incomplete: pack.incomplete,
+      missingShards: pack.missingShards
+    };
+  } catch (err) {
+    return { ok: false, error: "dashboard_load_failed", message: "Could not load progress." };
+  }
+}
+
+function teacherStudentDashboard_(body) {
+  var gate = requireTeacher_(requireToken_(book_(), body, false), body);
+  if (!gate.ok) return gate;
+  var target = idKey_(body.student || body.target || "");
+  if (!target) {
+    return { ok: false, error: "bad_student", message: "Missing student id." };
+  }
+  var ss = book_();
+  try {
+    var programs = listProgramsForStudent_(ss, target);
+    var apps = [];
+    var dashboards = {};
+    for (var i = 0; i < programs.length; i++) {
+      var program = programs[i];
+      var rows = loadProgressRowsWithFallback_(ss, target, program);
+      var pack = loadPackMergedForStudent_(ss, target, program);
+      apps.push(compactAppSummaryDash_(program, pack.progress_json, rows));
+      dashboards[program] = buildDashboardPayload_(pack.progress_json, rows);
+    }
+    return {
+      ok: true,
+      error: "",
+      student: asString_(body.student || target),
+      apps: apps,
+      dashboards: dashboards
+    };
+  } catch (err) {
+    return { ok: false, error: "teacher_dashboard_failed", message: "Could not load student dashboards." };
+  }
+}
+
+function teacherAppRoster_(body) {
+  var gate = requireTeacher_(requireToken_(book_(), body, false), body);
+  if (!gate.ok) return gate;
+  var program = textOrEmpty_(body.program).trim() || textOrEmpty_(body.app).trim();
+  if (!program) {
+    return { ok: false, error: "bad_program", message: "Missing app id." };
+  }
+  var ss = book_();
+  try {
+    var sheet = ensureAccounts_(ss);
+    var roster = [];
+    if (sheet.getLastRow() >= 2) {
+      var values = sheet.getDataRange().getValues();
+      for (var i = 1; i < values.length; i++) {
+        var display = asString_(values[i][0]).trim();
+        var idKeyVal = asString_(values[i][1]).trim();
+        if (!display || !idKeyVal) continue;
+        var rows = loadProgressRowsWithFallback_(ss, idKeyVal, program);
+        var pack = loadPackMergedForStudent_(ss, idKeyVal, program);
+        var summary = compactAppSummaryDash_(program, pack.progress_json, rows);
+        roster.push({
+          id: display,
+          id_key: idKeyVal,
+          summary: summary,
+          dashboard: buildDashboardPayload_(pack.progress_json, rows)
+        });
+      }
+    }
+    roster.sort(function (a, b) {
+      return String(a.id).localeCompare(String(b.id), undefined, { sensitivity: "base" });
+    });
+    return { ok: true, error: "", program: program, students: roster };
+  } catch (err) {
+    return { ok: false, error: "teacher_roster_failed", message: "Could not load class roster." };
+  }
 }
 
 function progress_(body) {
