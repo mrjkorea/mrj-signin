@@ -24,6 +24,8 @@ var METRICS_FALLBACK_TAIL = 12000;
 var BACKFILL_PROP = "backfill_score_index_cursor";
 var BACKFILL_TIME_BUDGET_MS = 270000;
 var WM_PACK_SHARD_PREFIX = "word-master@pack/";
+var TEACHER_IDS_PROP = "MRJ_TEACHER_IDS";
+var TEACHER_SECRET_PROP = "MRJ_TEACHER_SECRET";
 var METRICS_READ_BATCH = 2000;
 var FLUSH_LOCK_MS = 5000;
 
@@ -123,33 +125,65 @@ function login_(body) {
   });
 }
 
+function parseTeacherIdsProperty_() {
+  var raw = "";
+  try {
+    raw = PropertiesService.getScriptProperties().getProperty(TEACHER_IDS_PROP);
+  } catch (ignore) {}
+  if (!raw || !String(raw).trim()) return [];
+  var parts = String(raw).split(/[,;\s]+/);
+  var out = [];
+  for (var i = 0; i < parts.length; i++) {
+    var k = idKey_(parts[i]);
+    if (k) out.push(k);
+  }
+  return out;
+}
+
+function getTeacherSecretProperty_() {
+  try {
+    var s = PropertiesService.getScriptProperties().getProperty(TEACHER_SECRET_PROP);
+    if (s == null || !String(s).trim()) return "";
+    return String(s);
+  } catch (ignore) {}
+  return "";
+}
+
 function isTeacherIdKey_(key) {
   key = idKey_(key);
   if (!key) return false;
-  var raw = "";
-  try {
-    raw = PropertiesService.getScriptProperties().getProperty("MRJ_TEACHER_IDS");
-  } catch (ignore) {}
-  var list = raw ? String(raw).split(/[,;\s]+/) : [];
-  if (!list.length) {
-    list = ["mrjkorea", "mrjay", "jay"];
-  }
+  var list = parseTeacherIdsProperty_();
+  if (!list.length) return false;
   for (var i = 0; i < list.length; i++) {
-    if (idKey_(list[i]) === key) return true;
+    if (list[i] === key) return true;
   }
   return false;
 }
 
-function requireTeacher_(gate) {
+function requireTeacher_(gate, body) {
+  body = body || {};
   if (!gate.ok) return gate;
-  if (!isTeacherIdKey_(gate.id_key)) {
-    return { ok: false, error: "forbidden", message: "Teachers only." };
+  var ids = parseTeacherIdsProperty_();
+  var secret = getTeacherSecretProperty_();
+  var given = body.teacher_secret != null ? String(body.teacher_secret) : "";
+  if (!ids.length && !secret) {
+    return {
+      ok: false,
+      error: "forbidden",
+      message: "Teacher access is not configured."
+    };
   }
-  return gate;
+  if (ids.length && isTeacherIdKey_(gate.id_key)) {
+    return gate;
+  }
+  if (secret && given === secret) {
+    return gate;
+  }
+  return { ok: false, error: "forbidden", message: "Teachers only." };
 }
 
 function teacherListStudents_(body) {
-  var gate = requireTeacher_(requireToken_(book_(), body, false));
+  var gate = requireTeacher_(requireToken_(book_(), body, false), body);
   if (!gate.ok) return gate;
   var sheet = ensureAccounts_(book_());
   var students = [];
@@ -168,22 +202,32 @@ function teacherListStudents_(body) {
   return { ok: true, error: "", students: students };
 }
 
-function readPackShardsForStudent_(ss, idKey) {
-  var sheet = ss.getSheetByName(PACK_SHEET);
-  if (!sheet || sheet.getLastRow() < 2) return [];
-  var values = sheet.getDataRange().getValues();
-  var out = [];
-  for (var i = 1; i < values.length; i++) {
-    if (asString_(values[i][0]) !== idKey) continue;
-    var prog = asString_(values[i][1]);
-    if (prog.indexOf(WM_PACK_SHARD_PREFIX) !== 0) continue;
-    var json = readPackJson_(ss, idKey, prog);
-    if (json) out.push({ program: prog, progress_json: json });
+function packShardIdsFromShellJson_(mainJson) {
+  var obj;
+  try {
+    obj = JSON.parse(String(mainJson || "{}"));
+  } catch (ignore) {
+    return [];
   }
-  return out;
+  if (!obj || typeof obj !== "object") return [];
+  if (Array.isArray(obj.packShardIds)) {
+    return obj.packShardIds.map(function (id) {
+      return asString_(id).trim();
+    }).filter(Boolean);
+  }
+  return [];
 }
 
-function mergePackJsonWithShards_(mainJson, shards) {
+function readPackShardForProgram_(ss, idKey, packId) {
+  packId = asString_(packId).trim();
+  if (!packId) return null;
+  var program = WM_PACK_SHARD_PREFIX + packId;
+  var json = readPackJson_(ss, idKey, program);
+  if (!json) return null;
+  return { program: program, packId: packId, progress_json: json };
+}
+
+function mergePackJsonWithListedShards_(mainJson, shards) {
   var base = {};
   try {
     base = JSON.parse(String(mainJson || "{}"));
@@ -196,17 +240,15 @@ function mergePackJsonWithShards_(mainJson, shards) {
   for (var i = 0; i < shards.length; i++) {
     var shard = shards[i];
     if (!shard || !shard.progress_json) continue;
-    var pid = asString_(shard.program).slice(WM_PACK_SHARD_PREFIX.length);
+    var pid = asString_(shard.packId).trim();
+    if (!pid && shard.program) {
+      pid = asString_(shard.program).slice(WM_PACK_SHARD_PREFIX.length);
+    }
     try {
       var obj = JSON.parse(String(shard.progress_json));
       if (!obj || !obj.sets) continue;
       if (pid && obj.sets[pid]) {
         base.sets[pid] = obj.sets[pid];
-      } else {
-        var keys = Object.keys(obj.sets);
-        for (var k = 0; k < keys.length; k++) {
-          base.sets[keys[k]] = obj.sets[keys[k]];
-        }
       }
     } catch (ignore2) {}
   }
@@ -214,7 +256,7 @@ function mergePackJsonWithShards_(mainJson, shards) {
 }
 
 function teacherStudentSnapshot_(body) {
-  var gate = requireTeacher_(requireToken_(book_(), body, false));
+  var gate = requireTeacher_(requireToken_(book_(), body, false), body);
   if (!gate.ok) return gate;
   var target = idKey_(body.student || body.target || "");
   if (!target) {
@@ -226,9 +268,14 @@ function teacherStudentSnapshot_(body) {
     var rows = loadProgressRowsWithFallback_(ss, target, program);
     var page = pageProgressRows_(rows, 0, PROGRESS_MAX_LIMIT);
     var packJson = readPackJson_(ss, target, program);
-    var shards = readPackShardsForStudent_(ss, target);
+    var packIds = packShardIdsFromShellJson_(packJson);
+    var shards = [];
+    for (var si = 0; si < packIds.length; si++) {
+      var loaded = readPackShardForProgram_(ss, target, packIds[si]);
+      if (loaded) shards.push(loaded);
+    }
     if (shards.length) {
-      packJson = mergePackJsonWithShards_(packJson, shards);
+      packJson = mergePackJsonWithListedShards_(packJson, shards);
     }
     return {
       ok: true,
