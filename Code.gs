@@ -6,7 +6,7 @@
  * Passwords are stored for an exact match and are never returned or logged.
  */
 var SPREADSHEET_ID = "1bpgekxlektvwpsef1PmIkxPiDuHrkVXFaAy-OmwqL5c";
-var APP_VERSION = "1.4.3";
+var APP_VERSION = "1.4.4";
 var ACCOUNTS_SHEET = "StudentAccounts";
 var SCORE_SHEET = "StudentScoreIndex";
 var METRICS_SHEET = "ClassroomMetrics";
@@ -85,6 +85,7 @@ function register_(body) {
       token: token
     });
     bustAccountCache_(key);
+    appendSignInDeviceMetric_(ss, key, display, body);
     return {
       ok: true,
       error: "",
@@ -355,6 +356,44 @@ function metricsRowFromFields_(header, map, fields) {
   return row;
 }
 
+function metricsEventKind_(row, map) {
+  var kind = asString_(field_(row, map, "event_kind")).trim().toLowerCase();
+  if (kind) return kind;
+  var activity = asString_(field_(row, map, "activity")).trim().toLowerCase();
+  if (activity) return activity;
+  return asString_(field_(row, map, "event")).trim().toLowerCase();
+}
+
+function isSignInMetricsEvent_(kind) {
+  return asString_(kind).trim().toLowerCase() === "sign_in";
+}
+
+function isExcludedMetricsEvent_(kind) {
+  kind = asString_(kind).trim().toLowerCase();
+  return kind === "effort_sample" || kind === "sign_in";
+}
+
+function signInMetricsFieldValues_(displayId, body, device, iso) {
+  var program = textOrEmpty_(body.client_app).trim() || textOrEmpty_(body.app).trim() || "mrj-signin";
+  var local = iso.slice(0, 10);
+  var deviceItem = formatDeviceItemId_(device);
+  return {
+    event_kind: "sign_in",
+    activity: "sign_in",
+    event: "sign_in",
+    session_id: "signin-" + asString_(displayId) + "-" + iso,
+    student_email: asString_(displayId),
+    student_id: "",
+    curriculum_program: program,
+    item_id: deviceItem,
+    score_value: "",
+    score_max: "",
+    score_pct: "",
+    local_date: local,
+    timestamp: iso
+  };
+}
+
 function appendSignInDeviceMetric_(ss, idKey, displayId, body) {
   try {
     var device = parseDeviceFromBody_(body);
@@ -362,23 +401,10 @@ function appendSignInDeviceMetric_(ss, idKey, displayId, body) {
     var sheet = ss.getSheetByName(METRICS_SHEET);
     if (!sheet) return;
     var hm = metricsHeaderMap_(sheet);
-    if (!hm.map.event_kind && sheet.getLastRow() < 1) return;
+    if (!hm.map.event_kind && !hm.map.activity && sheet.getLastRow() < 1) return;
     var now = new Date();
     var iso = now.toISOString();
-    var program = textOrEmpty_(body.client_app).trim() || textOrEmpty_(body.app).trim() || "mrj-signin";
-    var row = metricsRowFromFields_(hm.header, hm.map, {
-      event_kind: "sign_in",
-      session_id: "signin-" + asString_(displayId) + "-" + iso,
-      student_email: asString_(displayId),
-      student_id: "",
-      curriculum_program: program,
-      item_id: formatDeviceItemId_(device),
-      score_value: "",
-      score_max: "",
-      score_pct: "",
-      local_date: iso.slice(0, 10),
-      timestamp: iso
-    });
+    var row = metricsRowFromFields_(hm.header, hm.map, signInMetricsFieldValues_(displayId, body, device, iso));
     sheet.appendRow(row);
   } catch (ignore) {}
 }
@@ -885,8 +911,8 @@ function readMetricsProgress_(ss, idKey, programFilter) {
   for (var i = values.length - 1; i >= 0; i--) {
     var row = values[i];
     if (!metricsRowMatches_(row, map, idKey)) continue;
-    var kind = asString_(field_(row, map, "event_kind")).trim().toLowerCase();
-    if (kind === "effort_sample") continue;
+    var kind = metricsEventKind_(row, map);
+    if (isExcludedMetricsEvent_(kind)) continue;
     var scoreValue = field_(row, map, "score_value");
     var scorePct = field_(row, map, "score_pct");
     var hasScore = (scoreValue !== "" && scoreValue != null) || (scorePct !== "" && scorePct != null);
@@ -1802,8 +1828,8 @@ function flushScoreIndexMap_(ss, map, changed) {
 }
 
 function scoreFromMetricsRow_(row, map) {
-  var kind = asString_(field_(row, map, "event_kind")).trim().toLowerCase();
-  if (kind === "effort_sample") return null;
+  var kind = metricsEventKind_(row, map);
+  if (isExcludedMetricsEvent_(kind)) return null;
   var scoreValue = field_(row, map, "score_value");
   var scorePct = field_(row, map, "score_pct");
   var hasScore = (scoreValue !== "" && scoreValue != null) || (scorePct !== "" && scorePct != null);

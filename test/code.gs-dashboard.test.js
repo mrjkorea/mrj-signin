@@ -72,7 +72,7 @@ describe("dashboard APIs", () => {
     const ctx = createGasContext();
     seedStudent(ctx);
     const metrics = ctx.ensureSheet("ClassroomMetrics");
-    metrics.getRange(1, 1, 1, 11).setValues([
+    metrics.getRange(1, 1, 1, 12).setValues([
       [
         "event_kind",
         "session_id",
@@ -85,6 +85,7 @@ describe("dashboard APIs", () => {
         "score_pct",
         "local_date",
         "timestamp",
+        "activity",
       ],
     ]);
     const login = ctx.login_({
@@ -95,9 +96,13 @@ describe("dashboard APIs", () => {
     });
     assert.equal(login.ok, true);
     assert.equal(metrics.getLastRow(), 2);
-    const row = metrics.getRange(2, 1, 1, 11).getValues()[0];
+    const row = metrics.getRange(2, 1, 1, 12).getValues()[0];
     assert.equal(row[0], "sign_in");
+    assert.equal(row[11], "sign_in");
     assert.equal(row[2], "zz_test_it_wm");
+    assert.equal(row[6], "");
+    assert.equal(row[7], "");
+    assert.equal(row[8], "");
     assert.match(String(row[5]), /^device:phone\/Android\/Chrome\/412x915$/);
   });
 

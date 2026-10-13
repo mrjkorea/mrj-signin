@@ -1,4 +1,4 @@
-# Manual Apps Script redeploy — sign-in server **1.4.3**
+# Manual Apps Script redeploy — sign-in server **1.4.4**
 
 The browser client in `mrj-auth.js` sends `program` and follows paging on the `progress` action. It stays compatible with older deployments (extra fields are ignored until this server is live). **Merge the client PR before or with deploy** so students are never blocked when progress load fails.
 
@@ -13,7 +13,7 @@ Fix **day2-words** to use its own `program` id and to block `save_pack` until lo
 - **`progress`**: **StudentScoreIndex** first; if empty for that student, **ClassroomMetrics tail** (12k rows, no 20 cap) until backfill completes. Optional `program` filter; `offset` / `limit` paging (`hasMore`, `total`).
 - **Teacher APIs** (configure Script Properties `MRJ_TEACHER_IDS` and/or `MRJ_TEACHER_SECRET`): `teacher_list_students`, `teacher_student_snapshot`, `teacher_student_dashboard`, `teacher_app_roster`.
 - **`student_dashboard`**: chart-friendly pack + score summary for the signed-in student in one app (`program` / `app`).
-- **Sign-in device logging**: `login` accepts optional `device` + `client_app`; appends a `sign_in` row to **ClassroomMetrics** (`item_id` = `device:type/os/browser/WxH`) without changing sheet columns.
+- **Sign-in device logging**: `login` / `register` accept optional `device` + `client_app`; append a **ClassroomMetrics** row with `event_kind` and `activity` (and `event` when that column exists) set to **`sign_in`**, **all score columns empty**, and `item_id` = `device:type/os/browser/WxH`. Progress, backfill, and dashboards **never** treat `sign_in` rows as plays/scores.
 - **Errors**: progress/pack load failures return `{ ok: false, error: "…" }` instead of `ok: true` with `[]`.
 - **Reads**: lock-free `progress_` / `load_pack`; **45s account cache**; up to **5 active tokens** per student (`tok1|tok2|…`).
 - **`stampNamesFor_`**: off sign-in path; optional time trigger `stampRecentNames`.
@@ -37,9 +37,9 @@ If you roll back to the pre-1.4.0 script after students have used 1.4.0:
 
 1. Open the Apps Script project **MRJ Sign-In** in Drive:  
    `https://drive.google.com/open?id=10zMY7ZHmz9k3ypRpKlIG9yKi7i3MdI8Cr00VFHKZHuwCOhtBFWtjesyU`
-2. Replace **`Code.gs`** with **`Code.gs`** from this repo (1.4.3).
+2. Replace **`Code.gs`** with **`Code.gs`** from this repo (1.4.4).
 3. **Deploy → Manage deployments** → **Edit** the **existing** Web app deployment → **New version** (same `/exec` URL).
-4. **GET** `/exec` → `"version":"1.4.3"`.
+4. **GET** `/exec` → `"version":"1.4.4"`.
 5. **Script properties** (Project settings → Script properties): set `MRJ_TEACHER_IDS` (comma-separated teacher sign-in ids) and/or `MRJ_TEACHER_SECRET` before using teacher dashboards.
 5. **Run → `backfillStudentScoreIndex`** repeatedly until execution log shows `{ done: true }` (each run processes metrics rows for up to ~4.5 minutes).
 6. **Pre-create tab `AppProgressMore`** (recommended before first deploy): headers `id_key`, `program`, `part`, `chunk` — avoids a rare race on the first chunked `load_pack`/`save_pack` when the tab does not exist yet.
