@@ -143,6 +143,8 @@ describe("teacher classroom API", () => {
       program: "word-master",
     });
     assert.equal(snap.ok, true);
+    assert.equal(snap.incomplete, false);
+    assert.equal(JSON.stringify(snap.missingShards || []), "[]");
     assert.ok(snap.progress_json.indexOf("time") !== -1);
     assert.equal(snap.progress_json.indexOf("stale_word"), -1);
     const parsed = JSON.parse(snap.progress_json);
@@ -150,7 +152,7 @@ describe("teacher classroom API", () => {
     assert.equal(parsed.sets.nouns200, undefined);
   });
 
-  it("listed packShardId with no shard row still returns shell-only merge", () => {
+  it("missing listed packShardId returns incomplete with missingShards", () => {
     const ctx = createGasContext();
     seedAccounts(ctx);
     setTeacherConfig(ctx, { ids: "real_teacher" });
@@ -191,6 +193,8 @@ describe("teacher classroom API", () => {
       program: "word-master",
     });
     assert.equal(snap.ok, true);
+    assert.equal(snap.incomplete, true);
+    assert.equal(JSON.stringify(snap.missingShards), '["verbs100"]');
     const parsed = JSON.parse(snap.progress_json);
     assert.ok(parsed.sets.nouns100);
     assert.ok(parsed.sets.nouns100.intro.shard_time);

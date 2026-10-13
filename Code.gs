@@ -270,9 +270,15 @@ function teacherStudentSnapshot_(body) {
     var packJson = readPackJson_(ss, target, program);
     var packIds = packShardIdsFromShellJson_(packJson);
     var shards = [];
+    var missingShards = [];
     for (var si = 0; si < packIds.length; si++) {
-      var loaded = readPackShardForProgram_(ss, target, packIds[si]);
-      if (loaded) shards.push(loaded);
+      var packId = packIds[si];
+      var loaded = readPackShardForProgram_(ss, target, packId);
+      if (loaded) {
+        shards.push(loaded);
+      } else {
+        missingShards.push(packId);
+      }
     }
     if (shards.length) {
       packJson = mergePackJsonWithListedShards_(packJson, shards);
@@ -285,7 +291,9 @@ function teacherStudentSnapshot_(body) {
       progress: page.progress,
       total: page.total,
       hasMore: page.hasMore,
-      progress_json: packJson
+      progress_json: packJson,
+      incomplete: missingShards.length > 0,
+      missingShards: missingShards
     };
   } catch (err) {
     return {
