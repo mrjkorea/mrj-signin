@@ -42,7 +42,7 @@ Optional vendored charts (loaded on demand when the panel opens):
 
 ## Teacher dashboard (GitHub Pages)
 
-`teacher-dashboard.html` — teacher sign-in + class list, per-student charts across apps, and per-app roster view. Uses the same Apps Script deployment and teacher Script Properties as PR #9.
+`teacher-dashboard.html` — single **teacher password** (Script Property `MRJ_TEACHER_SECRET`; no student account). Class list, per-student charts across apps, and per-app roster view. Uses the same Apps Script deployment as student sign-in.
 
 ## My scores panel API
 
