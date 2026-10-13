@@ -23,6 +23,7 @@ var PACK_WRITE_BATCH_ROWS = 10; // <= ~400k chars per setValues call
 var METRICS_FALLBACK_TAIL = 12000;
 var BACKFILL_PROP = "backfill_score_index_cursor";
 var BACKFILL_TIME_BUDGET_MS = 270000;
+var WM_PACK_SHARD_PREFIX = "word-master@pack/";
 var METRICS_READ_BATCH = 2000;
 var FLUSH_LOCK_MS = 5000;
 
@@ -49,6 +50,8 @@ function doPost(e) {
     if (action === "note_score") return json_(noteScore_(body));
     if (action === "load_pack") return json_(loadPack_(body));
     if (action === "save_pack") return json_(savePack_(body));
+    if (action === "teacher_list_students") return json_(teacherListStudents_(body));
+    if (action === "teacher_student_snapshot") return json_(teacherStudentSnapshot_(body));
     return json_({ ok: false, error: "bad_action", message: "Unknown action." });
   } catch (err) {
     return json_({ ok: false, error: "server", message: "Something went wrong." });
@@ -118,6 +121,132 @@ function login_(body) {
       progress: []
     };
   });
+}
+
+function isTeacherIdKey_(key) {
+  key = idKey_(key);
+  if (!key) return false;
+  var raw = "";
+  try {
+    raw = PropertiesService.getScriptProperties().getProperty("MRJ_TEACHER_IDS");
+  } catch (ignore) {}
+  var list = raw ? String(raw).split(/[,;\s]+/) : [];
+  if (!list.length) {
+    list = ["mrjkorea", "mrjay", "jay"];
+  }
+  for (var i = 0; i < list.length; i++) {
+    if (idKey_(list[i]) === key) return true;
+  }
+  return false;
+}
+
+function requireTeacher_(gate) {
+  if (!gate.ok) return gate;
+  if (!isTeacherIdKey_(gate.id_key)) {
+    return { ok: false, error: "forbidden", message: "Teachers only." };
+  }
+  return gate;
+}
+
+function teacherListStudents_(body) {
+  var gate = requireTeacher_(requireToken_(book_(), body, false));
+  if (!gate.ok) return gate;
+  var sheet = ensureAccounts_(book_());
+  var students = [];
+  if (sheet.getLastRow() >= 2) {
+    var values = sheet.getDataRange().getValues();
+    for (var i = 1; i < values.length; i++) {
+      var display = asString_(values[i][0]).trim();
+      var idKeyVal = asString_(values[i][1]).trim();
+      if (!display || !idKeyVal) continue;
+      students.push({ id: display, id_key: idKeyVal });
+    }
+  }
+  students.sort(function (a, b) {
+    return String(a.id).localeCompare(String(b.id), undefined, { sensitivity: "base" });
+  });
+  return { ok: true, error: "", students: students };
+}
+
+function readPackShardsForStudent_(ss, idKey) {
+  var sheet = ss.getSheetByName(PACK_SHEET);
+  if (!sheet || sheet.getLastRow() < 2) return [];
+  var values = sheet.getDataRange().getValues();
+  var out = [];
+  for (var i = 1; i < values.length; i++) {
+    if (asString_(values[i][0]) !== idKey) continue;
+    var prog = asString_(values[i][1]);
+    if (prog.indexOf(WM_PACK_SHARD_PREFIX) !== 0) continue;
+    var json = readPackJson_(ss, idKey, prog);
+    if (json) out.push({ program: prog, progress_json: json });
+  }
+  return out;
+}
+
+function mergePackJsonWithShards_(mainJson, shards) {
+  var base = {};
+  try {
+    base = JSON.parse(String(mainJson || "{}"));
+  } catch (ignore) {
+    base = {};
+  }
+  if (!base || typeof base !== "object") base = {};
+  if (!base.sets) base.sets = {};
+  if (!shards || !shards.length) return JSON.stringify(base);
+  for (var i = 0; i < shards.length; i++) {
+    var shard = shards[i];
+    if (!shard || !shard.progress_json) continue;
+    var pid = asString_(shard.program).slice(WM_PACK_SHARD_PREFIX.length);
+    try {
+      var obj = JSON.parse(String(shard.progress_json));
+      if (!obj || !obj.sets) continue;
+      if (pid && obj.sets[pid]) {
+        base.sets[pid] = obj.sets[pid];
+      } else {
+        var keys = Object.keys(obj.sets);
+        for (var k = 0; k < keys.length; k++) {
+          base.sets[keys[k]] = obj.sets[keys[k]];
+        }
+      }
+    } catch (ignore2) {}
+  }
+  return JSON.stringify(base);
+}
+
+function teacherStudentSnapshot_(body) {
+  var gate = requireTeacher_(requireToken_(book_(), body, false));
+  if (!gate.ok) return gate;
+  var target = idKey_(body.student || body.target || "");
+  if (!target) {
+    return { ok: false, error: "bad_student", message: "Missing student id." };
+  }
+  var program = textOrEmpty_(body.program).trim() || "word-master";
+  var ss = book_();
+  try {
+    var rows = loadProgressRowsWithFallback_(ss, target, program);
+    var page = pageProgressRows_(rows, 0, PROGRESS_MAX_LIMIT);
+    var packJson = readPackJson_(ss, target, program);
+    var shards = readPackShardsForStudent_(ss, target);
+    if (shards.length) {
+      packJson = mergePackJsonWithShards_(packJson, shards);
+    }
+    return {
+      ok: true,
+      error: "",
+      student: asString_(body.student || target),
+      program: program,
+      progress: page.progress,
+      total: page.total,
+      hasMore: page.hasMore,
+      progress_json: packJson
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      error: "teacher_load_failed",
+      message: "Could not load student snapshot."
+    };
+  }
 }
 
 function progress_(body) {
