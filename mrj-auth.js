@@ -151,7 +151,8 @@
     "mrj-decodable-try-61": ["decodable"],
     "mrj-decodable-try-81": ["decodable"],
     "mrj-decodable-try-71": ["decodable"],
-    "news-words": ["news-words"]
+    "news-words": ["news-words"],
+    "speakpass": ["speakpass"]
   };
   var viewGen = 0;
   var sessionGen = 0;
