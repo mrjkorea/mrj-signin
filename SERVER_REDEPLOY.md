@@ -28,6 +28,8 @@ If you roll back to the pre-1.4.0 script after students have used 1.4.0:
 | Chunked pack (>40k) in `AppProgressMore` | Live `load_pack` reads only column C → **truncated / corrupt** JSON for large saves. |
 | `AppProgress` schema | This release does **not** rename columns; rollback is safe for small single-cell packs. |
 
+**Teacher API (1.4.2+):** `teacher_list_students` and `teacher_student_snapshot` (teachers only). Configure **Script Property `MRJ_TEACHER_IDS`** (comma-separated id keys) and/or **`MRJ_TEACHER_SECRET`** (pass as `teacher_secret` in the POST body). If both are unset, teacher actions return `forbidden`. There are **no default teacher ids** (open registration). Snapshots merge only **`packShardIds`** listed on the `word-master` shell row, not every `word-master@pack/*` row. If a listed shard row is missing, the snapshot still returns `ok: true` with **`incomplete: true`** and **`missingShards`** (pack ids). Returns display ids and progress snapshots — never password/token columns.
+
 **Client note:** `mrj-auth.js` signs students in even when progress load fails (`progressError` set, `[]` progress) and retries in the background, so a brief server outage does not lock the classroom out. Rolling back the server does not by itself clear the browser session; multi-token mismatch is the main forced re-login risk.
 
 ## Redeploy steps (Jay)
