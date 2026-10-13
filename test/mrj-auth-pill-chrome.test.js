@@ -32,13 +32,13 @@ describe("student pill chrome", () => {
     auth.mount(root, { app: "mrj-zap-grammar-books" });
     auth._test.send({ action: "login", id: "alice", password: "pw" }, () => {}, () => {});
     await wait(3500);
-    assert.equal(pill.getAttribute("aria-label"), "My scores for alice");
+    assert.equal(pill.getAttribute("aria-label"), "My progress for alice");
     auth.signOut();
     auth._test.send({ action: "login", id: "bob", password: "pw" }, () => {}, () => {});
     await wait(3500);
     assert.equal(auth.student(), "bob");
-    assert.equal(pill.getAttribute("aria-label"), "My scores for bob");
-    assert.equal(pill.title, "My scores for bob");
+    assert.equal(pill.getAttribute("aria-label"), "My progress for bob");
+    assert.equal(pill.title, "My progress for bob");
   });
 
   it("shows the chip again when a wired pill is hidden", async () => {

@@ -7,7 +7,7 @@
 (function (global) {
   "use strict";
 
-  var AUTH_VERSION = "20261012-savefix-1.4.4";
+  var AUTH_VERSION = "20261013-dashboard-1.4.5";
   var ENDPOINT = "https://script.google.com/macros/s/AKfycbwtJTUO3gbcMrlAwsn1feWxyp7Rw2cxpfe1bOT9v2rxmQHa2Tlc6pFNWAjU6ZAdlD6kFQ/exec";
   var SESSION_KEY = "mrj.auth.session";
   var NOTE_OUTBOX_PREFIX = "mrj.auth.noteOutbox.";
@@ -166,6 +166,8 @@
   var panelOpen = false;
   var panelKeyHandler = null;
   var panelRowsProvider = null;
+  var panelViewMode = "charts";
+  var chartLibsPromise = null;
   var chipMutationObserver = null;
   var chipLayoutLastRun = 0;
   var chipLayoutTrailingTimer = null;
@@ -258,8 +260,100 @@
     return { attempts: 2, delays: [0, 1500] };
   }
 
+  function collectDeviceForSignin_() {
+    try {
+      if (global.MRJ_DEVICE && typeof global.MRJ_DEVICE.collect === "function") {
+        return global.MRJ_DEVICE.collect();
+      }
+    } catch (ignore) {}
+    var nav = global.navigator || {};
+    var ua = nav.userAgent || "";
+    var sw = 0;
+    var sh = 0;
+    try {
+      if (global.screen) {
+        sw = global.screen.width || 0;
+        sh = global.screen.height || 0;
+      }
+    } catch (ignore2) {}
+    var type = /Mobi|iPhone|Android/i.test(ua) ? "phone" : sw && sw < 768 ? "phone" : "desktop";
+    return { type: type, os: "unknown", browser: "unknown", screenW: sw, screenH: sh };
+  }
+
+  function attachClientMeta_(body) {
+    var out = {};
+    var k;
+    body = body || {};
+    for (k in body) {
+      if (Object.prototype.hasOwnProperty.call(body, k)) out[k] = body[k];
+    }
+    out.client_app = appProgram_() || out.client_app || "";
+    out.device = collectDeviceForSignin_();
+    return out;
+  }
+
+  function signinAssetsBase_() {
+    try {
+      var scripts = global.document && global.document.getElementsByTagName("script");
+      if (scripts) {
+        for (var i = scripts.length - 1; i >= 0; i--) {
+          var src = scripts[i].src || "";
+          if (src.indexOf("mrj-auth.js") !== -1) {
+            return src.replace(/mrj-auth\.js(\?.*)?$/, "");
+          }
+        }
+      }
+    } catch (ignore) {}
+    return "https://mrjkorea.github.io/mrj-signin/";
+  }
+
+  function loadScriptOnce_(url) {
+    return new Promise(function (resolve, reject) {
+      if (!global.document) {
+        resolve();
+        return;
+      }
+      var existing = global.document.querySelector('script[data-mrj-src="' + url + '"]');
+      if (existing) {
+        if (existing.getAttribute("data-mrj-loaded") === "1") {
+          resolve();
+          return;
+        }
+        existing.addEventListener("load", function () { resolve(); });
+        existing.addEventListener("error", function () { reject(new Error("load")); });
+        return;
+      }
+      var tag = global.document.createElement("script");
+      tag.src = url;
+      tag.async = true;
+      tag.setAttribute("data-mrj-src", url);
+      tag.addEventListener("load", function () {
+        tag.setAttribute("data-mrj-loaded", "1");
+        resolve();
+      });
+      tag.addEventListener("error", function () { reject(new Error("load")); });
+      global.document.head.appendChild(tag);
+    });
+  }
+
+  function ensureProgressChartLibs_() {
+    if (global.Chart && global.MRJ_PROGRESS_CHARTS) {
+      return Promise.resolve();
+    }
+    if (chartLibsPromise) return chartLibsPromise;
+    var base = signinAssetsBase_();
+    chartLibsPromise = loadScriptOnce_(base + "lib/chart.umd.min.js")
+      .then(function () {
+        return loadScriptOnce_(base + "lib/mrj-progress-charts.js");
+      });
+    return chartLibsPromise;
+  }
+
   function post_(body, hook) {
     var action = body && body.action ? String(body.action) : "";
+    if (action === "login" || action === "register") {
+      body = attachClientMeta_(body);
+    }
     var plan = retryPlan_(action);
     function runAttempt(index) {
       return postOnce_(body, REQUEST_TIMEOUT_MS).then(function (data) {
@@ -2078,7 +2172,7 @@
       var text =
         compact && displayId.length > 10 ? displayId.slice(0, 8) + "\u2026" : displayId;
       var title = compact && displayId.length > 10 ? displayId : "";
-      var ariaLabel = "My scores for " + displayId;
+      var ariaLabel = "My progress for " + displayId;
 
       chipWriteStyle_("top", baseTop);
       chipWriteStyle_("right", baseRight);
@@ -2198,7 +2292,7 @@
 
   function syncPillLabel_(pill) {
     if (!pill) return;
-    var label = "My scores for " + (state.id || "");
+    var label = "My progress for " + (state.id || "");
     var cur = pill.getAttribute("aria-label") || "";
     if (cur !== label) pill.setAttribute("aria-label", label);
     if (pill.title !== label) pill.title = label;
@@ -2305,21 +2399,190 @@
     scheduleChipLayout_();
   }
 
+  function panelTabs_(active, onPick) {
+    var row = el_("div", "mrj-auth-panel-tabs");
+    function tab(id, label) {
+      var btn = button_(label, "mrj-auth-panel-tab");
+      btn.type = "button";
+      if (id === active) btn.setAttribute("aria-current", "true");
+      btn.addEventListener("click", function () {
+        if (typeof onPick === "function") onPick(id);
+      });
+      row.appendChild(btn);
+      return btn;
+    }
+    tab("charts", "Charts");
+    tab("scores", "Scores");
+    return row;
+  }
+
+  function chartBlock_(title, heightPx) {
+    var wrap = el_("div", "mrj-auth-chart-block");
+    var h = el_("h3", "mrj-auth-chart-title");
+    h.textContent = title;
+    var box = el_("div", "mrj-auth-chart-canvas-wrap");
+    box.style.height = (heightPx || 220) + "px";
+    var canvas = global.document.createElement("canvas");
+    canvas.setAttribute("role", "img");
+    canvas.setAttribute("aria-label", title);
+    box.appendChild(canvas);
+    wrap.appendChild(h);
+    wrap.appendChild(box);
+    return { wrap: wrap, canvas: canvas };
+  }
+
+  function renderPanelDashboard_(body, dash, meta) {
+    meta = meta || {};
+    clear_(body);
+    if (meta.incomplete) {
+      var warn = el_("p", "mrj-auth-panel-cap");
+      warn.textContent =
+        "Some saved packs are still syncing (" +
+        (meta.missingShards || []).join(", ") +
+        "). Charts may be incomplete.";
+      body.appendChild(warn);
+    }
+    var summary = el_("p", "mrj-auth-panel-summary");
+    var overall = dash && dash.completion ? dash.completion.overallPct : null;
+    summary.textContent =
+      overall != null ? "Overall completion · " + overall + "%" : "Pack progress and scores for this app";
+    body.appendChild(summary);
+
+    var completion = dash && dash.completion ? dash.completion : { units: [], remaining: [] };
+    if (completion.units && completion.units.length) {
+      var comp = chartBlock_("Completion by unit", completion.units.length > 4 ? 280 : 220);
+      body.appendChild(comp.wrap);
+      if (global.MRJ_PROGRESS_CHARTS) {
+        global.MRJ_PROGRESS_CHARTS.renderCompletionBarChart(comp.canvas, completion.units);
+      }
+    } else {
+      var noPack = el_("p", "mrj-auth-empty");
+      noPack.textContent = "No pack progress saved in this app yet.";
+      body.appendChild(noPack);
+    }
+
+    var trend = dash && dash.scoreTrend ? dash.scoreTrend : [];
+    if (trend.length) {
+      var tr = chartBlock_("Scores over time", 220);
+      body.appendChild(tr.wrap);
+      if (global.MRJ_PROGRESS_CHARTS) {
+        global.MRJ_PROGRESS_CHARTS.renderScoreTrendChart(tr.canvas, trend);
+      }
+    }
+
+    if (completion.remaining && completion.remaining.length) {
+      var left = el_("div", "mrj-auth-panel-remaining");
+      var leftTitle = el_("h3", "mrj-auth-chart-title");
+      leftTitle.textContent = "Still to finish";
+      left.appendChild(leftTitle);
+      var chips = el_("div", "mrj-auth-chip-row");
+      completion.remaining.slice(0, 8).forEach(function (id) {
+        var chip = el_("span", "mrj-auth-tag");
+        chip.textContent = id;
+        chips.appendChild(chip);
+      });
+      left.appendChild(chips);
+      body.appendChild(left);
+    }
+
+    var recent = dash && dash.recentActivity ? dash.recentActivity : [];
+    if (recent.length) {
+      var rec = el_("div", "mrj-auth-panel-recent");
+      var recTitle = el_("h3", "mrj-auth-chart-title");
+      recTitle.textContent = "Recent activity";
+      rec.appendChild(recTitle);
+      var list = el_("ul", "mrj-auth-panel-list");
+      recent.forEach(function (row) {
+        var item = el_("li", "mrj-auth-panel-row");
+        var main = el_("span", "mrj-auth-prog-main");
+        main.textContent = row.item_id || "—";
+        var scoreLine = el_("span", "mrj-auth-panel-score");
+        scoreLine.textContent = [row.score_pct != null ? row.score_pct + "%" : "", row.local_date]
+          .filter(Boolean)
+          .join(" · ");
+        item.appendChild(main);
+        item.appendChild(scoreLine);
+        list.appendChild(item);
+      });
+      rec.appendChild(list);
+      body.appendChild(rec);
+    }
+
+    var foot = el_("div", "mrj-auth-panel-foot");
+    var signOutBtn = button_("Sign out", "mrj-auth-signout");
+    signOutBtn.addEventListener("click", function () {
+      closeProgressPanel();
+      signOut();
+    });
+    foot.appendChild(signOutBtn);
+    body.appendChild(foot);
+  }
+
+  function fetchStudentDashboard_(snap) {
+    var program = appProgram_();
+    return post_({
+      action: "student_dashboard",
+      id: snap.id,
+      token: snap.token,
+      program: program,
+      app: program
+    }).then(function (data) {
+      if (!sessionMatches_(snap)) {
+        return { ok: false, error: "stale_session" };
+      }
+      return data;
+    });
+  }
+
+  function loadPanelDashboard_(fetchGen, snap) {
+    if (!panelRootEl || panelRootEl.hidden) return;
+    var body = panelBodyEl;
+    if (!body) return;
+    renderPanelLoading_(body);
+    function cancelled() {
+      return !panelOpen || fetchGen !== panelFetchGen || !sessionMatches_(snap);
+    }
+    ensureProgressChartLibs_()
+      .then(function () {
+        if (cancelled()) return null;
+        return fetchStudentDashboard_(snap);
+      })
+      .then(function (result) {
+        if (cancelled() || !result) return;
+        if (!result.ok) {
+          renderPanelError_(body, result.message || "Could not load progress charts.", function () {
+            loadPanelDashboard_(fetchGen, captureSession_());
+          });
+          return;
+        }
+        renderPanelDashboard_(body, result.dashboard || {}, {
+          incomplete: result.incomplete,
+          missingShards: result.missingShards
+        });
+      })
+      .catch(function () {
+        if (cancelled()) return;
+        renderPanelError_(body, "Could not load progress charts.", function () {
+          loadPanelDashboard_(fetchGen, captureSession_());
+        });
+      });
+  }
+
   function panelShell_(titleText) {
     clear_(panelRootEl);
     var backdrop = el_("button", "mrj-auth-panel-backdrop");
     backdrop.type = "button";
-    backdrop.setAttribute("aria-label", "Close scores");
+    backdrop.setAttribute("aria-label", "Close progress");
     backdrop.addEventListener("click", function () {
       closeProgressPanel();
     });
     var dialog = el_("div", "mrj-auth-panel");
     dialog.setAttribute("role", "dialog");
     dialog.setAttribute("aria-modal", "true");
-    dialog.setAttribute("aria-label", titleText || "My scores");
+    dialog.setAttribute("aria-label", titleText || "My progress");
     var header = el_("div", "mrj-auth-panel-header");
     var title = el_("h2", "mrj-auth-panel-title");
-    title.textContent = titleText || "My scores";
+    title.textContent = titleText || "My progress";
     var closeBtn = button_("×", "mrj-auth-panel-close");
     closeBtn.setAttribute("aria-label", "Close");
     closeBtn.addEventListener("click", function () {
@@ -2444,19 +2707,41 @@
     });
   }
 
+  function switchPanelView_(mode, fetchGen, snap) {
+    panelViewMode = mode === "scores" ? "scores" : "charts";
+    if (!panelBodyEl || !panelBodyEl.parentNode) return;
+    var dialog = panelBodyEl.parentNode;
+    var oldTabs = dialog.querySelector(".mrj-auth-panel-tabs");
+    if (oldTabs && oldTabs.parentNode) oldTabs.parentNode.removeChild(oldTabs);
+    var tabs = panelTabs_(panelViewMode, function (next) {
+      switchPanelView_(next, fetchGen, snap);
+    });
+    dialog.insertBefore(tabs, panelBodyEl);
+    if (panelViewMode === "scores") {
+      loadPanelProgress_(fetchGen, snap);
+    } else {
+      loadPanelDashboard_(fetchGen, snap);
+    }
+  }
+
   function openProgressPanel() {
     try {
       if (!state.id || !state.token) return;
       if (panelOpen && panelRootEl && !panelRootEl.hidden) return;
       ensureChipDom_();
       panelOpen = true;
+      panelViewMode = global.MRJ_AUTH_TEST_MODE ? "scores" : "charts";
       panelFetchGen += 1;
       var fetchGen = panelFetchGen;
       var snap = captureSession_();
       panelRootEl.hidden = false;
       panelRootEl.setAttribute("aria-hidden", "false");
-      var shell = panelShell_("My scores");
+      var shell = panelShell_("My progress");
       panelBodyEl = shell.body;
+      var tabs = panelTabs_(panelViewMode, function (next) {
+        switchPanelView_(next, panelFetchGen, captureSession_());
+      });
+      shell.dialog.insertBefore(tabs, shell.body);
       renderPanelLoading_(shell.body);
       if (panelKeyHandler && global.removeEventListener) {
         global.removeEventListener("keydown", panelKeyHandler);
@@ -2466,7 +2751,11 @@
         if (ev && (ev.key === "Escape" || ev.key === "Esc")) closeProgressPanel();
       };
       if (global.addEventListener) global.addEventListener("keydown", panelKeyHandler);
-      loadPanelProgress_(fetchGen, snap);
+      if (panelViewMode === "scores") {
+        loadPanelProgress_(fetchGen, snap);
+      } else {
+        loadPanelDashboard_(fetchGen, snap);
+      }
       if (shell.dialog && shell.dialog.focus) shell.dialog.focus();
     } catch (ignore) {}
   }

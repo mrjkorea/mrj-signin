@@ -1,0 +1,139 @@
+:root {
+  --td-bg: #f3eadc;
+  --td-ink: #241c16;
+  --td-accent: #1e5c45;
+  --td-card: #fffaf3;
+  --td-line: rgba(36, 28, 22, 0.15);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Atkinson Hyperlegible", system-ui, sans-serif;
+  background: var(--td-bg);
+  color: var(--td-ink);
+  line-height: 1.4;
+}
+
+.td-wrap {
+  max-width: 40rem;
+  margin: 0 auto;
+  padding: 1rem 0.85rem 2.5rem;
+}
+
+.td-header h1 {
+  margin: 0 0 0.25rem;
+  font-family: Fraunces, Georgia, serif;
+  font-size: 1.65rem;
+}
+
+.td-sub {
+  margin: 0 0 1rem;
+  opacity: 0.85;
+}
+
+.td-card {
+  background: var(--td-card);
+  border: 2px solid var(--td-ink);
+  border-radius: 1rem;
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+.td-label {
+  display: block;
+  font-weight: 700;
+  margin: 0.5rem 0 0.25rem;
+}
+
+.td-input {
+  width: 100%;
+  font: inherit;
+  padding: 0.65rem 0.75rem;
+  border: 2px solid var(--td-ink);
+  border-radius: 0.65rem;
+}
+
+.td-btn {
+  width: 100%;
+  margin-top: 0.75rem;
+  min-height: 2.85rem;
+  border: 2px solid var(--td-ink);
+  border-radius: 0.75rem;
+  background: var(--td-accent);
+  color: #fffaf3;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.td-btn-secondary {
+  background: var(--td-card);
+  color: var(--td-ink);
+}
+
+.td-error {
+  color: #9b2c1a;
+  font-weight: 700;
+}
+
+.td-student-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.td-student-list li {
+  margin: 0 0 0.45rem;
+}
+
+.td-student-btn {
+  width: 100%;
+  text-align: left;
+  padding: 0.75rem 0.85rem;
+  border: 2px solid var(--td-line);
+  border-radius: 0.75rem;
+  background: #fff;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.td-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-bottom: 0.75rem;
+}
+
+.td-toolbar .td-btn {
+  width: auto;
+  flex: 1;
+  min-width: 7rem;
+  margin-top: 0;
+}
+
+.td-chart-wrap {
+  position: relative;
+  width: 100%;
+  height: 16rem;
+  margin: 0.5rem 0 0.75rem;
+}
+
+.td-section-title {
+  margin: 0.75rem 0 0.35rem;
+  font-size: 1.1rem;
+  font-weight: 700;
+}
+
+.td-meta {
+  font-size: 0.95rem;
+  opacity: 0.9;
+}
+
+.td-hidden {
+  display: none !important;
+}

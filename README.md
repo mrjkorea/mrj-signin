@@ -2,7 +2,7 @@
 
 Browser sign-in and score history for MRJ classroom apps on GitHub Pages.
 
-**Current client version:** `20261007-progress-1.4.2` (`MRJ_AUTH.AUTH_VERSION`)
+**Current client version:** `20261013-dashboard-1.4.5` (`MRJ_AUTH.AUTH_VERSION`)
 
 ## Load in an app
 
@@ -30,7 +30,19 @@ Browser sign-in and score history for MRJ classroom apps on GitHub Pages.
 
 After sign-in (including resume), a fixed top-right chip shows the student id. It avoids overlapping visible controls (buttons, links, selects, pills) by shifting downward while staying right-aligned. On viewports under 480px wide it uses a compact layout (shorter label, ~40vw max width).
 
-Clicking the chip opens **My scores** for the current app. Sign out is available inside the panel.
+Clicking the chip (or the app’s name pill) opens **My progress** for the current app: chart tabs for pack completion and score trends, plus a **Scores** tab with the list view. Sign out is available inside the panel.
+
+Optional vendored charts (loaded on demand when the panel opens):
+
+```html
+<script src="https://mrjkorea.github.io/mrj-signin/lib/mrj-device.js"></script>
+```
+
+(`mrj-auth.js` also sends a basic device payload on login if `mrj-device.js` is not loaded.)
+
+## Teacher dashboard (GitHub Pages)
+
+`teacher-dashboard.html` — teacher sign-in + class list, per-student charts across apps, and per-app roster view. Uses the same Apps Script deployment and teacher Script Properties as PR #9.
 
 ## My scores panel API
 

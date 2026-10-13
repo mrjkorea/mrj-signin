@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Progress dashboard demo</title>
+  <link rel="stylesheet" href="../../mrj-auth.css" />
+</head>
+<body>
+  <script>
+    window.MRJ_AUTH_TEST_MODE = true;
+  </script>
+  <script src="../../mrj-auth.js"></script>
+  <script src="../../lib/chart.umd.min.js"></script>
+  <script src="../../lib/mrj-progress-charts.js"></script>
+  <script src="../../mrj-auth-boot.js" data-mrj-app="word-master"></script>
+  <script>
+    (function () {
+      var dash = {
+        completion: {
+          overallPct: 62,
+          remaining: ["verbs100"],
+          units: [
+            { id: "nouns100", label: "Nouns 100", done: 8, total: 10, pct: 80 },
+            { id: "verbs100", label: "Verbs 100", done: 3, total: 10, pct: 30 },
+          ],
+        },
+        scoreTrend: [
+          { date: "2026-10-08", pct: 70, item_id: "a" },
+          { date: "2026-10-09", pct: 75, item_id: "b" },
+          { date: "2026-10-10", pct: 80, item_id: "c" },
+        ],
+        recentActivity: [
+          { item_id: "nouns100:speller", local_date: "2026-10-10", score_pct: 80 },
+        ],
+      };
+      MRJ_AUTH._test.finishSession = function () {};
+      fetch = function () {
+        return Promise.resolve({
+          json: function () {
+            return Promise.resolve({
+              ok: true,
+              id: "zz_test_it_wm",
+              token: "demo",
+              dashboard: dash,
+            });
+          },
+        });
+      };
+      MRJ_AUTH.mount(document.body);
+      MRJ_AUTH._test.finish_("zz_test_it_wm", "demo", []);
+      setTimeout(function () {
+        MRJ_AUTH.openProgressPanel();
+      }, 50);
+    })();
+  </script>
+</body>
+</html>
