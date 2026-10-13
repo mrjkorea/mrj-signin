@@ -6,7 +6,7 @@
  * Passwords are stored for an exact match and are never returned or logged.
  */
 var SPREADSHEET_ID = "1bpgekxlektvwpsef1PmIkxPiDuHrkVXFaAy-OmwqL5c";
-var APP_VERSION = "1.4.4";
+var APP_VERSION = "1.4.5";
 var ACCOUNTS_SHEET = "StudentAccounts";
 var SCORE_SHEET = "StudentScoreIndex";
 var METRICS_SHEET = "ClassroomMetrics";
@@ -26,6 +26,10 @@ var BACKFILL_TIME_BUDGET_MS = 270000;
 var WM_PACK_SHARD_PREFIX = "word-master@pack/";
 var TEACHER_IDS_PROP = "MRJ_TEACHER_IDS";
 var TEACHER_SECRET_PROP = "MRJ_TEACHER_SECRET";
+var TEACHER_SECRET_FAIL_CACHE_KEY = "teacher_secret_fail_count";
+var TEACHER_SECRET_FAIL_CACHE_SEC = 600;
+var TEACHER_SECRET_FAIL_SLEEP_BASE_MS = 200;
+var TEACHER_SECRET_FAIL_SLEEP_MAX_MS = 5000;
 var METRICS_READ_BATCH = 2000;
 var FLUSH_LOCK_MS = 5000;
 
@@ -165,9 +169,44 @@ function isTeacherIdKey_(key) {
   return false;
 }
 
-function requireTeacher_(gate, body) {
+function teacherSecretFailCount_() {
+  try {
+    var raw = CacheService.getScriptCache().get(TEACHER_SECRET_FAIL_CACHE_KEY);
+    var n = parseInt(raw, 10);
+    return isFinite(n) && n > 0 ? n : 0;
+  } catch (ignore) {}
+  return 0;
+}
+
+function bumpTeacherSecretFailCount_() {
+  try {
+    var cache = CacheService.getScriptCache();
+    var n = teacherSecretFailCount_() + 1;
+    cache.put(TEACHER_SECRET_FAIL_CACHE_KEY, String(n), TEACHER_SECRET_FAIL_CACHE_SEC);
+    return n;
+  } catch (ignore) {}
+  return 1;
+}
+
+function clearTeacherSecretFailCount_() {
+  try {
+    CacheService.getScriptCache().remove(TEACHER_SECRET_FAIL_CACHE_KEY);
+  } catch (ignore) {}
+}
+
+function teacherSecretFailurePenalty_() {
+  var n = bumpTeacherSecretFailCount_();
+  var delay = TEACHER_SECRET_FAIL_SLEEP_BASE_MS + n * 300;
+  if (delay > TEACHER_SECRET_FAIL_SLEEP_MAX_MS) delay = TEACHER_SECRET_FAIL_SLEEP_MAX_MS;
+  if (delay > 0) {
+    try {
+      Utilities.sleep(delay);
+    } catch (ignore) {}
+  }
+}
+
+function requireTeacherAccess_(body) {
   body = body || {};
-  if (!gate.ok) return gate;
   var ids = parseTeacherIdsProperty_();
   var secret = getTeacherSecretProperty_();
   var given = body.teacher_secret != null ? String(body.teacher_secret) : "";
@@ -178,17 +217,26 @@ function requireTeacher_(gate, body) {
       message: "Teacher access is not configured."
     };
   }
-  if (ids.length && isTeacherIdKey_(gate.id_key)) {
-    return gate;
-  }
   if (secret && given === secret) {
-    return gate;
+    clearTeacherSecretFailCount_();
+    return { ok: true, error: "", message: "", teacher: true };
+  }
+  if (secret && given && given !== secret) {
+    teacherSecretFailurePenalty_();
+    return { ok: false, error: "forbidden", message: "Teachers only." };
+  }
+  if (ids.length) {
+    var tokenGate = requireToken_(book_(), body, false);
+    if (!tokenGate.ok) return tokenGate;
+    if (isTeacherIdKey_(tokenGate.id_key)) {
+      return tokenGate;
+    }
   }
   return { ok: false, error: "forbidden", message: "Teachers only." };
 }
 
 function teacherListStudents_(body) {
-  var gate = requireTeacher_(requireToken_(book_(), body, false), body);
+  var gate = requireTeacherAccess_(body);
   if (!gate.ok) return gate;
   var sheet = ensureAccounts_(book_());
   var students = [];
@@ -261,7 +309,7 @@ function mergePackJsonWithListedShards_(mainJson, shards) {
 }
 
 function teacherStudentSnapshot_(body) {
-  var gate = requireTeacher_(requireToken_(book_(), body, false), body);
+  var gate = requireTeacherAccess_(body);
   if (!gate.ok) return gate;
   var target = idKey_(body.student || body.target || "");
   if (!target) {
@@ -679,7 +727,7 @@ function studentDashboard_(body) {
 }
 
 function teacherStudentDashboard_(body) {
-  var gate = requireTeacher_(requireToken_(book_(), body, false), body);
+  var gate = requireTeacherAccess_(body);
   if (!gate.ok) return gate;
   var target = idKey_(body.student || body.target || "");
   if (!target) {
@@ -710,7 +758,7 @@ function teacherStudentDashboard_(body) {
 }
 
 function teacherAppRoster_(body) {
-  var gate = requireTeacher_(requireToken_(book_(), body, false), body);
+  var gate = requireTeacherAccess_(body);
   if (!gate.ok) return gate;
   var program = textOrEmpty_(body.program).trim() || textOrEmpty_(body.app).trim();
   if (!program) {

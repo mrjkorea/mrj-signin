@@ -2,6 +2,9 @@
   "use strict";
 
   var SESSION_KEY = "mrj.teacher.dashboard";
+  var ENDPOINT =
+    (globalThis.MRJ_AUTH && MRJ_AUTH.ENDPOINT) ||
+    "https://script.google.com/macros/s/AKfycbwtJTUO3gbcMrlAwsn1feWxyp7Rw2cxpfe1bOT9v2rxmQHa2Tlc6pFNWAjU6ZAdlD6kFQ/exec";
   var KNOWN_APPS = [
     "word-master",
     "greenzap",
@@ -13,17 +16,15 @@
   ];
 
   var root = document.getElementById("td-root");
-  var state = { id: "", token: "", teacherSecret: "", view: "class", student: "", app: "word-master" };
+  var state = { teacherSecret: "", app: "word-master" };
 
   function loadSession() {
     try {
       var raw = sessionStorage.getItem(SESSION_KEY);
       if (!raw) return;
       var parsed = JSON.parse(raw);
-      if (parsed && parsed.id && parsed.token) {
-        state.id = parsed.id;
-        state.token = parsed.token;
-        state.teacherSecret = parsed.teacherSecret || "";
+      if (parsed && parsed.teacherSecret) {
+        state.teacherSecret = String(parsed.teacherSecret);
       }
     } catch (ignore) {}
   }
@@ -32,15 +33,13 @@
     sessionStorage.setItem(
       SESSION_KEY,
       JSON.stringify({
-        id: state.id,
-        token: state.token,
         teacherSecret: state.teacherSecret,
       })
     );
   }
 
   function clearSession() {
-    state = { id: "", token: "", teacherSecret: "", view: "class", student: "", app: "word-master" };
+    state = { teacherSecret: "", app: "word-master" };
     sessionStorage.removeItem(SESSION_KEY);
     renderLogin();
   }
@@ -54,8 +53,6 @@
   function post(action, extra) {
     var body = {
       action: action,
-      id: state.id,
-      token: state.token,
       teacher_secret: state.teacherSecret,
     };
     if (extra) {
@@ -63,7 +60,7 @@
         if (Object.prototype.hasOwnProperty.call(extra, k)) body[k] = extra[k];
       }
     }
-    return fetch(MRJ_AUTH.ENDPOINT, {
+    return fetch(ENDPOINT, {
       method: "POST",
       headers: { "Content-Type": "text/plain;charset=utf-8" },
       body: JSON.stringify(body),
@@ -76,6 +73,18 @@
       });
   }
 
+  function tryUnlock(secret) {
+    state.teacherSecret = secret;
+    return post("teacher_list_students").then(function (listRes) {
+      if (!listRes || !listRes.ok) {
+        state.teacherSecret = "";
+        return { ok: false, message: (listRes && listRes.message) || "Wrong password." };
+      }
+      saveSession();
+      return { ok: true, students: listRes.students || [] };
+    });
+  }
+
   function renderLogin(message) {
     root.innerHTML = "";
     var card = el("div", "td-card");
@@ -84,68 +93,33 @@
       err.textContent = message;
       card.appendChild(err);
     }
-    var idLabel = el("label", "td-label");
-    idLabel.textContent = "Teacher ID";
-    var idInput = el("input", "td-input");
-    idInput.id = "td-id";
-    idInput.autocomplete = "username";
     var pwLabel = el("label", "td-label");
-    pwLabel.textContent = "Password";
+    pwLabel.textContent = "Teacher password";
     var pwInput = el("input", "td-input");
     pwInput.type = "password";
     pwInput.id = "td-pw";
     pwInput.autocomplete = "current-password";
-    var secLabel = el("label", "td-label");
-    secLabel.textContent = "Teacher secret (if your school uses one)";
-    var secInput = el("input", "td-input");
-    secInput.type = "password";
-    secInput.id = "td-secret";
-    secInput.autocomplete = "off";
+    pwInput.setAttribute("aria-label", "Teacher password");
     var btn = el("button", "td-btn");
     btn.type = "button";
-    btn.textContent = "Sign in";
+    btn.textContent = "Open class dashboard";
     btn.addEventListener("click", function () {
-      var id = idInput.value.trim();
-      var password = pwInput.value;
-      var secret = secInput.value;
-      fetch(MRJ_AUTH.ENDPOINT, {
-        method: "POST",
-        headers: { "Content-Type": "text/plain;charset=utf-8" },
-        body: JSON.stringify({ action: "login", id: id, password: password, client_app: "teacher-dashboard" }),
-      })
-        .then(function (r) {
-          return r.json();
-        })
-        .then(function (data) {
-          if (!data || !data.ok || !data.token) {
-            renderLogin((data && data.message) || "Could not sign in.");
-            return;
-          }
-          state.id = data.id || id;
-          state.token = data.token;
-          state.teacherSecret = secret;
-          saveSession();
-          return post("teacher_list_students").then(function (listRes) {
-            if (!listRes || !listRes.ok) {
-              clearSession();
-              renderLogin((listRes && listRes.message) || "Teacher access denied.");
-              return;
-            }
-            renderClass(listRes.students || []);
-          });
-        })
-        .catch(function () {
-          renderLogin("Could not sign in.");
-        });
+      var secret = pwInput.value;
+      btn.disabled = true;
+      tryUnlock(secret).then(function (res) {
+        btn.disabled = false;
+        if (!res.ok) {
+          renderLogin(res.message);
+          return;
+        }
+        renderClass(res.students);
+      });
     });
-    card.appendChild(idLabel);
-    card.appendChild(idInput);
     card.appendChild(pwLabel);
     card.appendChild(pwInput);
-    card.appendChild(secLabel);
-    card.appendChild(secInput);
     card.appendChild(btn);
     root.appendChild(card);
+    pwInput.focus();
   }
 
   function renderClass(students) {
@@ -159,7 +133,7 @@
     });
     var outBtn = el("button", "td-btn td-btn-secondary");
     outBtn.type = "button";
-    outBtn.textContent = "Sign out";
+    outBtn.textContent = "Lock";
     outBtn.addEventListener("click", clearSession);
     toolbar.appendChild(appBtn);
     toolbar.appendChild(outBtn);
@@ -321,10 +295,10 @@
   }
 
   loadSession();
-  if (state.id && state.token) {
+  if (state.teacherSecret) {
     post("teacher_list_students").then(function (res) {
       if (res && res.ok) renderClass(res.students || []);
-      else renderLogin((res && res.message) || "Session expired.");
+      else renderLogin((res && res.message) || "Session expired. Enter the teacher password again.");
     });
   } else {
     renderLogin();

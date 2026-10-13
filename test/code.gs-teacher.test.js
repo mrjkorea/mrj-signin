@@ -219,4 +219,27 @@ describe("teacher classroom API", () => {
     });
     assert.equal(ok.ok, true);
   });
+
+  it("teacher_secret alone grants access without student token", () => {
+    const ctx = createGasContext();
+    seedAccounts(ctx);
+    setTeacherConfig(ctx, { secret: "mrj" });
+
+    const denied = ctx.teacherListStudents_({ teacher_secret: "wrong" });
+    assert.equal(denied.ok, false);
+    assert.equal(denied.error, "forbidden");
+
+    const ok = ctx.teacherListStudents_({ teacher_secret: "mrj" });
+    assert.equal(ok.ok, true);
+    assert.ok(ok.students.length >= 2);
+  });
+
+  it("wrong teacher_secret increments fail cache", () => {
+    const ctx = createGasContext();
+    setTeacherConfig(ctx, { secret: "mrj" });
+    ctx.teacherListStudents_({ teacher_secret: "nope" });
+    assert.equal(ctx.teacherSecretFailCount_(), 1);
+    ctx.teacherListStudents_({ teacher_secret: "mrj" });
+    assert.equal(ctx.teacherSecretFailCount_(), 0);
+  });
 });

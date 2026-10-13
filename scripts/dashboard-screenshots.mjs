@@ -52,12 +52,12 @@ async function mockTeacherPage(page) {
     const origFetch = window.fetch;
     window.fetch = function (url, opts) {
       const body = opts && opts.body ? JSON.parse(opts.body) : {};
-      if (body.action === "login") {
-        return Promise.resolve({
-          json: () => Promise.resolve({ ok: true, id: "zz_test_teacher", token: "t" }),
-        });
-      }
       if (body.action === "teacher_list_students") {
+        if (body.teacher_secret !== "demo-secret") {
+          return Promise.resolve({
+            json: () => Promise.resolve({ ok: false, error: "forbidden", message: "Teachers only." }),
+          });
+        }
         return Promise.resolve({ json: () => Promise.resolve({ ok: true, students }) });
       }
       if (body.action === "teacher_student_dashboard") {
@@ -89,9 +89,8 @@ async function main() {
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
   await mockTeacherPage(page);
   await page.goto(`http://127.0.0.1:${port}/teacher-dashboard.html`);
-  await page.fill("#td-id", "zz_test_teacher");
-  await page.fill("#td-pw", "pw");
-  await page.click("text=Sign in");
+  await page.fill("#td-pw", "demo-secret");
+  await page.click("text=Open class dashboard");
   await page.waitForSelector("text=Students");
   await page.screenshot({ path: path.join(artifactDir, "teacher-class-list-phone.png"), fullPage: true });
   await page.click("text=zz_test_it_wm");
