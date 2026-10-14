@@ -27,6 +27,30 @@ describe("dashboard-pure", () => {
     assert.equal(trend[1].pct, 90);
   });
 
+  it("summarizes dailyWordLog into Words-by-day lines", () => {
+    const pack = {
+      v: 1,
+      dailyWordLog: {
+        v: 1,
+        days: {
+          "2026-10-14|nouns200": {
+            pack: "nouns200",
+            date: "2026-10-14",
+            from: 200,
+            to: 210,
+            ens: ["apple", "banana"],
+            ids: ["apple", "banana"],
+          },
+        },
+      },
+    };
+    const summary = dash.summarizeStudentDashboard(JSON.stringify(pack), []);
+    assert.equal(summary.dailyWords.length, 1);
+    assert.equal(summary.dailyWords[0].date, "2026-10-14");
+    assert.match(summary.dailyWords[0].packs[0].line, /Words 200/);
+    assert.match(summary.dailyWords[0].packs[0].line, /apple/);
+  });
+
   it("formatDeviceItemId compacts device payload", () => {
     const s = dash.formatDeviceItemId_({
       type: "phone",
