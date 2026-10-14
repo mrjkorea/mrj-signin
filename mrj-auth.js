@@ -7,7 +7,7 @@
 (function (global) {
   "use strict";
 
-  var AUTH_VERSION = "20261013-dashboard-1.4.5";
+  var AUTH_VERSION = "20261014-daily-words-1.4.6";
   var ENDPOINT = "https://script.google.com/macros/s/AKfycbwtJTUO3gbcMrlAwsn1feWxyp7Rw2cxpfe1bOT9v2rxmQHa2Tlc6pFNWAjU6ZAdlD6kFQ/exec";
   var SESSION_KEY = "mrj.auth.session";
   var NOTE_OUTBOX_PREFIX = "mrj.auth.noteOutbox.";
@@ -2506,6 +2506,30 @@
       });
       rec.appendChild(list);
       body.appendChild(rec);
+    }
+
+    var dailyWords = dash && dash.dailyWords ? dash.dailyWords : [];
+    if (dailyWords.length) {
+      var dwc = el_("div", "mrj-auth-panel-daily-words");
+      var dwcTitle = el_("h3", "mrj-auth-chart-title");
+      dwcTitle.textContent = "Words by day";
+      dwc.appendChild(dwcTitle);
+      dailyWords.forEach(function (day) {
+        var dayHead = el_("p", "mrj-auth-panel-cap");
+        dayHead.textContent = day.date || "";
+        dwc.appendChild(dayHead);
+        var packs = day.packs || [];
+        if (packs.length) {
+          var dayList = el_("ul", "mrj-auth-panel-list");
+          packs.forEach(function (row) {
+            var li = el_("li", "mrj-auth-panel-row");
+            li.textContent = row.line || "";
+            dayList.appendChild(li);
+          });
+          dwc.appendChild(dayList);
+        }
+      });
+      body.appendChild(dwc);
     }
 
     var foot = el_("div", "mrj-auth-panel-foot");

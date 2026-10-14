@@ -120,4 +120,53 @@ describe("dashboard APIs", () => {
     assert.ok(res.apps.length >= 1);
     assert.ok(res.dashboards["word-master"]);
   });
+
+  it("student_dashboard returns dailyWords from scores shard dailyWordLog", () => {
+    const ctx = createGasContext();
+    seedStudent(ctx);
+    const pack = ctx.ensureSheet("AppProgress");
+    pack.setCell(
+      2,
+      3,
+      JSON.stringify({
+        v: 1,
+        hasScoresShard: true,
+        packShardIds: [],
+        sets: { nouns100: { intro: { done: true } } },
+      })
+    );
+    pack.setCell(3, 1, "zz_test_it_wm");
+    pack.setCell(3, 2, "word-master@scores");
+    pack.setCell(
+      3,
+      3,
+      JSON.stringify({
+        v: 1,
+        scoreRows: [{ item_id: "nouns100:speller", score_pct: 80, local_date: "2026-10-10" }],
+        dailyWordLog: {
+          v: 1,
+          days: {
+            "2026-10-11|nouns100": {
+              pack: "nouns100",
+              date: "2026-10-11",
+              from: 101,
+              to: 102,
+              ens: ["cat", "dog"],
+              ids: ["cat", "dog"],
+            },
+          },
+        },
+      })
+    );
+    const res = ctx.studentDashboard_({
+      id: "zz_test_it_wm",
+      token: "tok-student",
+      program: "word-master",
+    });
+    assert.equal(res.ok, true);
+    assert.equal(res.dashboard.dailyWords.length, 1);
+    assert.equal(res.dashboard.dailyWords[0].date, "2026-10-11");
+    assert.match(res.dashboard.dailyWords[0].packs[0].line, /cat/);
+    assert.equal(res.dashboard.scoreTrend.length, 1);
+  });
 });

@@ -6,7 +6,7 @@
  * Passwords are stored for an exact match and are never returned or logged.
  */
 var SPREADSHEET_ID = "1bpgekxlektvwpsef1PmIkxPiDuHrkVXFaAy-OmwqL5c";
-var APP_VERSION = "1.4.5";
+var APP_VERSION = "1.4.6";
 var ACCOUNTS_SHEET = "StudentAccounts";
 var SCORE_SHEET = "StudentScoreIndex";
 var METRICS_SHEET = "ClassroomMetrics";
@@ -24,6 +24,7 @@ var METRICS_FALLBACK_TAIL = 12000;
 var BACKFILL_PROP = "backfill_score_index_cursor";
 var BACKFILL_TIME_BUDGET_MS = 270000;
 var WM_PACK_SHARD_PREFIX = "word-master@pack/";
+var WM_SCORES_PROGRAM = "word-master@scores";
 var TEACHER_IDS_PROP = "MRJ_TEACHER_IDS";
 var TEACHER_SECRET_PROP = "MRJ_TEACHER_SECRET";
 var TEACHER_SECRET_FAIL_CACHE_KEY = "teacher_secret_fail_count";
@@ -603,6 +604,154 @@ function recentActivityDash_(rows, limit) {
   return out;
 }
 
+function normalizeDailyWordLogDash_(raw) {
+  if (!raw || typeof raw !== "object") return { v: 1, days: {} };
+  var days = raw.days && typeof raw.days === "object" ? raw.days : {};
+  return { v: 1, days: days };
+}
+
+function mergeDailyWordEntriesDash_(ea, eb) {
+  if (!ea) return eb;
+  if (!eb) return ea;
+  var packId = ea.pack || eb.pack;
+  var seen = {};
+  var ids = [];
+  var ens = [];
+  function addList(src) {
+    var srcIds = src.ids || [];
+    for (var i = 0; i < srcIds.length; i++) {
+      var k = asString_(srcIds[i]);
+      if (!k || seen[k]) continue;
+      seen[k] = 1;
+      ids.push(k);
+      ens.push((src.ens || [])[i] || k);
+    }
+  }
+  addList(ea);
+  addList(eb);
+  var from = 0;
+  var to = 0;
+  var pair = [ea, eb];
+  for (var p = 0; p < pair.length; p++) {
+    var e = pair[p];
+    if (e.from > 0) from = from > 0 ? Math.min(from, e.from) : e.from;
+    if (e.to > 0) to = to > 0 ? Math.max(to, e.to) : e.to;
+  }
+  return {
+    pack: packId,
+    date: ea.date || eb.date,
+    ids: ids,
+    ens: ens,
+    from: from,
+    to: to,
+    at: Math.max(Number(ea.at) || 0, Number(eb.at) || 0)
+  };
+}
+
+function mergeDailyWordLogsDash_(a, b) {
+  var la = normalizeDailyWordLogDash_(a);
+  var lb = normalizeDailyWordLogDash_(b);
+  var out = { v: 1, days: {} };
+  var keys = {};
+  var laKeys = Object.keys(la.days);
+  for (var i = 0; i < laKeys.length; i++) keys[laKeys[i]] = 1;
+  var lbKeys = Object.keys(lb.days);
+  for (var j = 0; j < lbKeys.length; j++) keys[lbKeys[j]] = 1;
+  var allKeys = Object.keys(keys);
+  for (var k = 0; k < allKeys.length; k++) {
+    var key = allKeys[k];
+    out.days[key] = mergeDailyWordEntriesDash_(la.days[key], lb.days[key]);
+  }
+  return out;
+}
+
+function dailyWordRangeLabelDash_(fromNum, toNum) {
+  var a = Math.min(fromNum, toNum);
+  var b = Math.max(fromNum, toNum);
+  if (!a && !b) return "";
+  if (a === b) return "Word " + a;
+  return "Words " + a + "\u2013" + b;
+}
+
+function dailyWordsLineDash_(ens, max) {
+  var list = [];
+  for (var i = 0; i < (ens || []).length; i++) {
+    if (ens[i]) list.push(ens[i]);
+  }
+  var lim = max == null ? 24 : Math.max(1, parseInt(max, 10) || 24);
+  if (list.length <= lim) return list.join(", ");
+  return list.slice(0, lim).join(", ") + " \u2026";
+}
+
+function formatDailyWordDayLineDash_(entry) {
+  if (!entry) return "";
+  var head = dailyWordRangeLabelDash_(entry.from, entry.to);
+  var body = dailyWordsLineDash_(entry.ens, 32);
+  if (head && body) return head + ": " + body;
+  return head || body || "";
+}
+
+function summarizeDailyWordsDash_(packJson, opts) {
+  var parsed = {};
+  try {
+    parsed = JSON.parse(String(packJson || "{}"));
+  } catch (ignore) {
+    parsed = {};
+  }
+  var log = normalizeDailyWordLogDash_(parsed.dailyWordLog);
+  var byDate = {};
+  var dayKeys = Object.keys(log.days);
+  for (var i = 0; i < dayKeys.length; i++) {
+    var key = dayKeys[i];
+    var e = log.days[key];
+    if (!e) continue;
+    var dk = e.date || String(key).split("|")[0];
+    if (!byDate[dk]) byDate[dk] = [];
+    var line = formatDailyWordDayLineDash_(e);
+    if (!line) continue;
+    var pack = e.pack || String(key).split("|")[1] || "";
+    byDate[dk].push({ pack: pack, line: line });
+  }
+  var dates = Object.keys(byDate).sort().reverse();
+  var limit = opts && opts.limit != null ? Math.max(1, parseInt(opts.limit, 10) || 120) : 120;
+  if (dates.length > limit) dates = dates.slice(0, limit);
+  var out = [];
+  for (var d = 0; d < dates.length; d++) {
+    out.push({ date: dates[d], packs: byDate[dates[d]] });
+  }
+  return out;
+}
+
+function hasScoresShardFromShellJson_(mainJson) {
+  try {
+    var obj = JSON.parse(String(mainJson || "{}"));
+    return !!(obj && obj.hasScoresShard);
+  } catch (ignore) {
+    return false;
+  }
+}
+
+function mergeDailyWordLogIntoPackJsonDash_(packJson, scoresJson) {
+  if (!scoresJson) return packJson;
+  var base = {};
+  try {
+    base = JSON.parse(String(packJson || "{}"));
+  } catch (ignore) {
+    base = {};
+  }
+  var scoresObj = {};
+  try {
+    scoresObj = JSON.parse(String(scoresJson || "{}"));
+  } catch (ignore2) {
+    scoresObj = {};
+  }
+  var merged = mergeDailyWordLogsDash_(base.dailyWordLog, scoresObj.dailyWordLog);
+  if (merged.days && Object.keys(merged.days).length) {
+    base.dailyWordLog = merged;
+  }
+  return JSON.stringify(base);
+}
+
 function buildDashboardPayload_(packJson, progressRows) {
   var parsed = {};
   try {
@@ -615,12 +764,14 @@ function buildDashboardPayload_(packJson, progressRows) {
     completion: completion,
     scoreTrend: scoreTrendDash_(progressRows, 40),
     weakItems: weakItemsDash_(progressRows, 70),
-    recentActivity: recentActivityDash_(progressRows, 8)
+    recentActivity: recentActivityDash_(progressRows, 8),
+    dailyWords: summarizeDailyWordsDash_(packJson, { limit: 120 })
   };
 }
 
 function loadPackMergedForStudent_(ss, idKey, program) {
   var packJson = readPackJson_(ss, idKey, program);
+  var hadScoresShard = hasScoresShardFromShellJson_(packJson);
   var packIds = packShardIdsFromShellJson_(packJson);
   var shards = [];
   var missingShards = [];
@@ -631,6 +782,14 @@ function loadPackMergedForStudent_(ss, idKey, program) {
     else missingShards.push(packId);
   }
   if (shards.length) packJson = mergePackJsonWithListedShards_(packJson, shards);
+  if (program === "word-master" && hadScoresShard) {
+    var scoresJson = readPackJson_(ss, idKey, WM_SCORES_PROGRAM);
+    if (!scoresJson) {
+      missingShards.push("scores");
+    } else {
+      packJson = mergeDailyWordLogIntoPackJsonDash_(packJson, scoresJson);
+    }
+  }
   return {
     progress_json: packJson,
     incomplete: missingShards.length > 0,

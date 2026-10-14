@@ -229,6 +229,23 @@
           block.appendChild(tw);
           MRJ_PROGRESS_CHARTS.renderScoreTrendChart(tc, dash.scoreTrend);
         }
+        if (dash && dash.dailyWords && dash.dailyWords.length) {
+          var wdTitle = el("h4", "td-section-title");
+          wdTitle.textContent = "Words by day";
+          block.appendChild(wdTitle);
+          dash.dailyWords.forEach(function (day) {
+            var dayMeta = el("p", "td-meta");
+            dayMeta.textContent = day.date || "";
+            block.appendChild(dayMeta);
+            var ul = el("ul", "td-word-day-list");
+            (day.packs || []).forEach(function (row) {
+              var li = el("li");
+              li.textContent = row.line || "";
+              ul.appendChild(li);
+            });
+            block.appendChild(ul);
+          });
+        }
         card.appendChild(block);
       });
     });

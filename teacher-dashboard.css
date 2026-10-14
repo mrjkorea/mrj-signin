@@ -134,6 +134,12 @@ body {
   opacity: 0.9;
 }
 
+.td-word-day-list {
+  margin: 0 0 0.75rem 1.1rem;
+  padding: 0;
+  font-size: 0.95rem;
+}
+
 .td-hidden {
   display: none !important;
 }

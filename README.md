@@ -2,7 +2,7 @@
 
 Browser sign-in and score history for MRJ classroom apps on GitHub Pages.
 
-**Current client version:** `20261013-dashboard-1.4.5` (`MRJ_AUTH.AUTH_VERSION`)
+**Current client version:** `20261014-daily-words-1.4.6` (`MRJ_AUTH.AUTH_VERSION`)
 
 ## Load in an app
 

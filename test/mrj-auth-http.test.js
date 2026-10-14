@@ -71,7 +71,13 @@ function jsonResponse(obj, delayMs) {
 describe("mrj-auth HTTP client", () => {
   it("exposes version marker", () => {
     const { auth } = loadAuth(() => Promise.resolve({ text: () => Promise.resolve("{}") }));
-    assert.equal(auth.AUTH_VERSION, "20261013-dashboard-1.4.5");
+    assert.equal(auth.AUTH_VERSION, "20261014-daily-words-1.4.6");
+  });
+
+  it("dashboard panel includes Words by day block", () => {
+    const src = fs.readFileSync(AUTH_PATH, "utf8");
+    assert.ok(src.includes("Words by day"));
+    assert.ok(src.includes("dailyWords"));
   });
 
   it("waits through a 15s delay then succeeds", async () => {
