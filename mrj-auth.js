@@ -894,6 +894,15 @@
     if (inputs[0]) inputs[0].focus();
   }
 
+  // Display only: "8/10" -> "8/10 (80%)". Leaves anything else as-is.
+  function scoreWithPct_(score) {
+    if (score == null) return score;
+    var str = String(score);
+    var m = str.match(/^\s*(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)\s*$/);
+    if (!m || !(Number(m[2]) > 0)) return score;
+    return str.trim() + " (" + Math.round((Number(m[1]) / Number(m[2])) * 100) + "%)";
+  }
+
   function renderSignedIn_() {
     if (!rootEl) return;
     clear_(rootEl);
@@ -912,7 +921,7 @@
         var main = el_("span", "mrj-auth-prog-main");
         main.textContent = [row.program, row.item].filter(Boolean).join(" · ");
         var detail = el_("span");
-        detail.textContent = [row.score, row.date].filter(Boolean).join(" · ");
+        detail.textContent = [scoreWithPct_(row.score), row.date].filter(Boolean).join(" · ");
         item.appendChild(main);
         if (detail.textContent) item.appendChild(detail);
         list.appendChild(item);
