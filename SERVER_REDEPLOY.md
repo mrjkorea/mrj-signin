@@ -1,4 +1,4 @@
-# Manual Apps Script redeploy — sign-in server **1.4.6**
+# Manual Apps Script redeploy — sign-in server **1.5.0**
 
 The browser client in `mrj-auth.js` sends `program` and follows paging on the `progress` action. It stays compatible with older deployments (extra fields are ignored until this server is live). **Merge the client PR before or with deploy** so students are never blocked when progress load fails.
 
@@ -12,6 +12,7 @@ Fix **day2-words** to use its own `program` id and to block `save_pack` until lo
 - **`save_pack` / `load_pack`**: non-decodable programs store **incoming** JSON (fixes word-master freeze). **Decodable** keeps book-bag merge; empty/`{}` incoming does **not** wipe stored books. Chunks in **`AppProgress` (4 columns unchanged)** + **`AppProgressMore`** (part 0 = chunk count, parts 1…n = extra data). **1.4.1**: **`packChunkCell_`** (pack columns only) escapes leading **`'`** / formula chars; chunks never split inside an emoji (surrogate-safe); **`AppProgressMore` is read once per `save_pack`** (batched `setValues`, contiguous `deleteRows`, no nested lock on tab create); max stored progress **`MAX_PROGRESS_TOTAL_CHARS` = 2,000,000** (up to 51 × 40k pieces). **No migration** — existing rows load as before.
 - **`progress`**: **StudentScoreIndex** first; if empty for that student, **ClassroomMetrics tail** (12k rows, no 20 cap) until backfill completes. Optional `program` filter; `offset` / `limit` paging (`hasMore`, `total`).
 - **Teacher APIs** (configure Script Properties `MRJ_TEACHER_IDS` and/or `MRJ_TEACHER_SECRET`): `teacher_list_students`, `teacher_student_snapshot`, `teacher_student_dashboard`, `teacher_app_roster`. Valid **`teacher_secret` alone** (no student token) is accepted; wrong secrets are slowed via a short server-side delay.
+- **Teacher mode (1.5.0)**: `login` / `register` / `progress` may return **`role: "teacher"`** for the server allowlist id **Andrew** only. Teacher saves tag **`metadata_json: {"role":"teacher"}`** (existing columns / in-pack JSON only). Aggregators skip teacher-tagged rows.
 - **`student_dashboard`**: chart-friendly pack + score summary for the signed-in student in one app (`program` / `app`).
 - **Sign-in device logging**: `login` / `register` accept optional `device` + `client_app`; append a **ClassroomMetrics** row with `event_kind` and `activity` (and `event` when that column exists) set to **`sign_in`**, **all score columns empty**, and `item_id` = `device:type/os/browser/WxH`. Progress, backfill, and dashboards **never** treat `sign_in` rows as plays/scores.
 - **Errors**: progress/pack load failures return `{ ok: false, error: "…" }` instead of `ok: true` with `[]`.

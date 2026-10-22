@@ -6,7 +6,8 @@
  * Passwords are stored for an exact match and are never returned or logged.
  */
 var SPREADSHEET_ID = "1bpgekxlektvwpsef1PmIkxPiDuHrkVXFaAy-OmwqL5c";
-var APP_VERSION = "1.4.6";
+var APP_VERSION = "1.5.0";
+var SIGNIN_TEACHER_ROLE_KEYS = ["andrew"];
 var ACCOUNTS_SHEET = "StudentAccounts";
 var SCORE_SHEET = "StudentScoreIndex";
 var METRICS_SHEET = "ClassroomMetrics";
@@ -91,14 +92,14 @@ function register_(body) {
     });
     bustAccountCache_(key);
     appendSignInDeviceMetric_(ss, key, display, body);
-    return {
+    return attachSignInRole_({
       ok: true,
       error: "",
       message: "",
       id: display,
       token: token,
       progress: []
-    };
+    }, key);
   });
 }
 
@@ -124,14 +125,14 @@ function login_(body) {
     });
     bustAccountCache_(key);
     appendSignInDeviceMetric_(ss, key, existing.id_display, body);
-    return {
+    return attachSignInRole_({
       ok: true,
       error: "",
       message: "",
       id: existing.id_display,
       token: token,
       progress: []
-    };
+    }, key);
   });
 }
 
@@ -167,6 +168,92 @@ function isTeacherIdKey_(key) {
   for (var i = 0; i < list.length; i++) {
     if (list[i] === key) return true;
   }
+  return false;
+}
+
+function signInRoleForIdKey_(key) {
+  key = idKey_(key);
+  if (!key) return "";
+  for (var ti = 0; ti < SIGNIN_TEACHER_ROLE_KEYS.length; ti++) {
+    if (SIGNIN_TEACHER_ROLE_KEYS[ti] === key) return "teacher";
+  }
+  return "";
+}
+
+function parseMetadataJson_(raw) {
+  if (raw == null || raw === "") return null;
+  if (typeof raw === "object") return raw;
+  try {
+    var v = JSON.parse(String(raw));
+    return v && typeof v === "object" ? v : null;
+  } catch (ignore) {}
+  return null;
+}
+
+function metadataRoleIsTeacher_(meta) {
+  if (!meta || typeof meta !== "object") return false;
+  return asString_(meta.role).trim().toLowerCase() === "teacher";
+}
+
+function isTeacherMetadataJson_(raw) {
+  return metadataRoleIsTeacher_(parseMetadataJson_(raw));
+}
+
+function teacherMetadataJsonString_() {
+  return '{"role":"teacher"}';
+}
+
+function tagProgressJsonWithTeacherRole_(json) {
+  var obj;
+  try {
+    obj = JSON.parse(String(json == null ? "{}" : json));
+    if (!obj || typeof obj !== "object") obj = {};
+  } catch (ignore) {
+    obj = {};
+  }
+  obj.metadata_json = { role: "teacher" };
+  return JSON.stringify(obj);
+}
+
+function isTeacherTaggedPackJson_(json) {
+  try {
+    var obj = JSON.parse(String(json || "{}"));
+    return !!(obj && obj.metadata_json && metadataRoleIsTeacher_(obj.metadata_json));
+  } catch (ignore) {}
+  return false;
+}
+
+function metricsRowIsTeacherTagged_(row, map) {
+  if (!map || map.metadata_json == null) return false;
+  return isTeacherMetadataJson_(field_(row, map, "metadata_json"));
+}
+
+function scoreIndexHeaderMap_(sheet) {
+  if (!sheet || sheet.getLastRow() < 1) return {};
+  var header = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  var map = {};
+  for (var c = 0; c < header.length; c++) map[String(header[c]).trim()] = c;
+  return map;
+}
+
+function attachSignInRole_(payload, idKey) {
+  var role = signInRoleForIdKey_(idKey);
+  if (role) payload.role = role;
+  return payload;
+}
+
+function filterProgressRowsSkipTeacher_(rows) {
+  var out = [];
+  for (var i = 0; i < (rows || []).length; i++) {
+    if (progressRowIsTeacherTagged_(rows[i])) continue;
+    out.push(rows[i]);
+  }
+  return out;
+}
+
+function progressRowIsTeacherTagged_(row) {
+  if (!row) return false;
+  if (isTeacherMetadataJson_(row.metadata_json)) return true;
   return false;
 }
 
@@ -422,11 +509,11 @@ function isExcludedMetricsEvent_(kind) {
   return kind === "effort_sample" || kind === "sign_in";
 }
 
-function signInMetricsFieldValues_(displayId, body, device, iso) {
+function signInMetricsFieldValues_(displayId, body, device, iso, idKey) {
   var program = textOrEmpty_(body.client_app).trim() || textOrEmpty_(body.app).trim() || "mrj-signin";
   var local = iso.slice(0, 10);
   var deviceItem = formatDeviceItemId_(device);
-  return {
+  var fields = {
     event_kind: "sign_in",
     activity: "sign_in",
     event: "sign_in",
@@ -441,6 +528,10 @@ function signInMetricsFieldValues_(displayId, body, device, iso) {
     local_date: local,
     timestamp: iso
   };
+  if (signInRoleForIdKey_(idKey) === "teacher") {
+    fields.metadata_json = teacherMetadataJsonString_();
+  }
+  return fields;
 }
 
 function appendSignInDeviceMetric_(ss, idKey, displayId, body) {
@@ -453,7 +544,7 @@ function appendSignInDeviceMetric_(ss, idKey, displayId, body) {
     if (!hm.map.event_kind && !hm.map.activity && sheet.getLastRow() < 1) return;
     var now = new Date();
     var iso = now.toISOString();
-    var row = metricsRowFromFields_(hm.header, hm.map, signInMetricsFieldValues_(displayId, body, device, iso));
+    var row = metricsRowFromFields_(hm.header, hm.map, signInMetricsFieldValues_(displayId, body, device, iso, idKey));
     sheet.appendRow(row);
   } catch (ignore) {}
 }
@@ -869,14 +960,15 @@ function studentDashboard_(body) {
   }
   var ss = book_();
   try {
-    var rows = loadProgressRowsWithFallback_(ss, gate.id_key, program);
+    var rows = filterProgressRowsSkipTeacher_(loadProgressRowsWithFallback_(ss, gate.id_key, program));
     var pack = loadPackMergedForStudent_(ss, gate.id_key, program);
+    var packJsonForDash = isTeacherTaggedPackJson_(pack.progress_json) ? "{}" : pack.progress_json;
     return {
       ok: true,
       error: "",
       id: gate.id,
       program: program,
-      dashboard: buildDashboardPayload_(pack.progress_json, rows),
+      dashboard: buildDashboardPayload_(packJsonForDash, rows),
       incomplete: pack.incomplete,
       missingShards: pack.missingShards
     };
@@ -965,8 +1057,9 @@ function progress_(body) {
 
   try {
     var all = loadProgressRowsWithFallback_(book_(), gate.id_key, program);
+    all = filterProgressRowsSkipTeacher_(all);
     var page = pageProgressRows_(all, offset, limit);
-    return {
+    return attachSignInRole_({
       ok: true,
       error: "",
       message: "",
@@ -978,7 +1071,7 @@ function progress_(body) {
       offset: page.offset,
       limit: page.limit,
       hasMore: page.hasMore
-    };
+    }, gate.id_key);
   } catch (err) {
     return {
       ok: false,
@@ -997,6 +1090,10 @@ function noteScore_(body) {
     if (!gate.ok) return gate;
     var now = new Date().toISOString();
     var program = textOrEmpty_(body.program);
+    var meta = body.metadata_json;
+    if (signInRoleForIdKey_(gate.id_key) === "teacher") {
+      meta = { role: "teacher" };
+    }
     upsertScore_(ss, {
       id_key: gate.id_key,
       program: program,
@@ -1005,7 +1102,8 @@ function noteScore_(body) {
       score_max: body.scoreMax,
       score_pct: body.scorePct,
       local_date: textOrEmpty_(body.localDate),
-      updated_at: now
+      updated_at: now,
+      metadata_json: meta
     });
     var progFilter = program.trim();
     var rows = loadProgressRowsWithFallback_(ss, gate.id_key, progFilter);
@@ -1118,6 +1216,7 @@ function readMetricsProgress_(ss, idKey, programFilter) {
   for (var i = values.length - 1; i >= 0; i--) {
     var row = values[i];
     if (!metricsRowMatches_(row, map, idKey)) continue;
+    if (metricsRowIsTeacherTagged_(row, map)) continue;
     var kind = metricsEventKind_(row, map);
     if (isExcludedMetricsEvent_(kind)) continue;
     var scoreValue = field_(row, map, "score_value");
@@ -1174,9 +1273,12 @@ function readScoreIndex_(ss, idKey) {
   var sheet = ss.getSheetByName(SCORE_SHEET);
   if (!sheet || sheet.getLastRow() < 2) return [];
   var values = sheet.getDataRange().getValues();
+  var headerMap = scoreIndexHeaderMap_(sheet);
+  var metaCol = headerMap.metadata_json;
   var found = [];
   for (var i = 1; i < values.length; i++) {
     if (asString_(values[i][0]) !== idKey) continue;
+    if (metaCol != null && isTeacherMetadataJson_(values[i][metaCol])) continue;
     found.push({
       program: asString_(values[i][1]),
       item: asString_(values[i][2]),
@@ -1316,6 +1418,7 @@ function writeAccountCells_(sheet, rowNumber, fields) {
 
 function upsertScore_(ss, rec) {
   var sheet = ensureScoreSheet_(ss);
+  var headerMap = scoreIndexHeaderMap_(sheet);
   var values = sheet.getLastRow() >= 1 ? sheet.getDataRange().getValues() : [];
   var rowNumber = 0;
   for (var i = 1; i < values.length; i++) {
@@ -1335,6 +1438,14 @@ function upsertScore_(ss, rec) {
     textCell_(rec.local_date),
     textCell_(rec.updated_at)
   ];
+  if (headerMap.metadata_json != null && rec.metadata_json != null) {
+    while (row.length <= headerMap.metadata_json) row.push("");
+    row[headerMap.metadata_json] = textCell_(
+      typeof rec.metadata_json === "string"
+        ? rec.metadata_json
+        : JSON.stringify(rec.metadata_json)
+    );
+  }
   if (!rowNumber) rowNumber = Math.max(sheet.getLastRow(), 1) + 1;
   var range = sheet.getRange(rowNumber, 1, 1, row.length);
   range.setNumberFormat("@");
@@ -1503,6 +1614,11 @@ function savePack_(body) {
     var moreParsed = parsePackMoreFromValues_(moreValues, gate.id_key, program);
     var stored = packJsonFromMainAndMore_(chunk0, moreParsed);
     var merged = mergeProgressJson_(stored, incoming, program);
+    if (signInRoleForIdKey_(gate.id_key) === "teacher") {
+      merged = tagProgressJsonWithTeacherRole_(merged);
+    } else if (body.metadata_json && metadataRoleIsTeacher_(parseMetadataJson_(body.metadata_json))) {
+      merged = tagProgressJsonWithTeacherRole_(merged);
+    }
     var split = splitProgressChunks_(merged);
     if (split.error) {
       return {
@@ -2035,6 +2151,7 @@ function flushScoreIndexMap_(ss, map, changed) {
 }
 
 function scoreFromMetricsRow_(row, map) {
+  if (metricsRowIsTeacherTagged_(row, map)) return null;
   var kind = metricsEventKind_(row, map);
   if (isExcludedMetricsEvent_(kind)) return null;
   var scoreValue = field_(row, map, "score_value");

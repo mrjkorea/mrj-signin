@@ -7,7 +7,7 @@
 (function (global) {
   "use strict";
 
-  var AUTH_VERSION = "20261014-daily-words-1.4.6";
+  var AUTH_VERSION = "20261022-teacher-mode-1.5.0";
   var ENDPOINT = "https://script.google.com/macros/s/AKfycbwtJTUO3gbcMrlAwsn1feWxyp7Rw2cxpfe1bOT9v2rxmQHa2Tlc6pFNWAjU6ZAdlD6kFQ/exec";
   var SESSION_KEY = "mrj.auth.session";
   var NOTE_OUTBOX_PREFIX = "mrj.auth.noteOutbox.";
@@ -117,7 +117,8 @@
 
   var rootEl = null;
   var options = {};
-  var state = { id: "", token: "", progress: [], progressError: "" };
+  var state = { id: "", token: "", role: "", progress: [], progressError: "" };
+  var teacherChromeApplied_ = false;
   var packState = {};
   var PROGRESS_PAGE_SIZE = 500;
   var PROGRESS_MAX_PAGES = 40;
@@ -685,8 +686,9 @@
     rootEl.classList.add("mrj-auth");
     viewGen += 1;
     busy = false;
-    state = { id: "", token: "", progress: [], progressError: "" };
+    state = { id: "", token: "", role: "", progress: [], progressError: "" };
     packState = {};
+    teacherChromeApplied_ = false;
     var saved = readSession_();
     if (!saved) {
       renderDoors_();
@@ -706,7 +708,7 @@
     }).then(function (result) {
       if (gen !== viewGen) return;
       if (result && result.ok) {
-        finish_(result.id || saved.id, result.token || saved.token, result.progress);
+        finish_(result.id || saved.id, result.token || saved.token, result.progress, "", result.role);
         return;
       }
       if (sessionRejected_(result)) {
@@ -740,6 +742,7 @@
       state.token = result.token || saved.token;
       state.progress = result.progress;
       state.progressError = "";
+      applyServerRole_(result.role);
       saveSession_();
       renderSignedIn_();
       updateStudentChip_();
@@ -755,17 +758,53 @@
     return state.token || "";
   }
 
+  function isTeacher() {
+    return state.role === "teacher";
+  }
+
+  function applyServerRole_(role) {
+    var next = role === "teacher" ? "teacher" : "";
+    var wasTeacher = state.role === "teacher";
+    state.role = next;
+    syncTeacherChrome_(wasTeacher);
+  }
+
+  function syncTeacherChrome_(wasTeacher) {
+    try {
+      if (global.document && global.document.body) {
+        global.document.body.classList.toggle("mrj-teacher", isTeacher());
+      }
+      if (isTeacher() && !wasTeacher && !teacherChromeApplied_ && global.document) {
+        teacherChromeApplied_ = true;
+        try {
+          global.document.dispatchEvent(new global.CustomEvent("mrj-teacher", { detail: { id: state.id } }));
+        } catch (ignore) {
+          var ev = global.document.createEvent("Event");
+          ev.initEvent("mrj-teacher", true, true);
+          global.document.dispatchEvent(ev);
+        }
+      }
+      if (!isTeacher()) teacherChromeApplied_ = false;
+    } catch (ignore) {}
+  }
+
+  function teacherSaveMetadata_() {
+    return isTeacher() ? { role: "teacher" } : null;
+  }
+
   function signOut() {
     viewGen += 1;
     sessionGen += 1;
     loadPlaceSeq += 1;
     busy = false;
     activeLoginFlight = null;
-    state = { id: "", token: "", progress: [], progressError: "" };
+    state = { id: "", token: "", role: "", progress: [], progressError: "" };
     packState = {};
+    teacherChromeApplied_ = false;
     clearSession_();
     closeProgressPanel();
     disconnectChipObserver_();
+    syncTeacherChrome_(true);
     updateStudentChip_();
     if (rootEl) renderDoors_();
   }
@@ -803,7 +842,7 @@
         }
         renderStatus_(MESSAGES.checking);
         send_({ action: "login", id: id, password: password }, function (data) {
-          finish_(data.id || id, data.token, data.progress);
+          finish_(data.id || id, data.token, data.progress, "", data.role);
         }, function (msg) {
           renderLogin_(msg, entered);
         });
@@ -838,7 +877,7 @@
         }
         renderStatus_("Making your ID…");
         send_({ action: "register", id: id, password: password }, function (data) {
-          finish_(data.id || id, data.token, data.progress);
+          finish_(data.id || id, data.token, data.progress, "", data.role);
         }, function (msg) {
           renderCreate_(msg, entered);
         });
@@ -988,9 +1027,9 @@
         busy = false;
         setBusy_(false);
         if (body && (body.action === "login" || body.action === "register")) {
-          loadPlace_(data.id || body.id, data.token);
+          loadPlace_(data.id || body.id, data.token, data.role);
         } else {
-          finish_(data.id || (body && body.id), data.token, data.progress);
+          finish_(data.id || (body && body.id), data.token, data.progress, "", data.role);
         }
         return;
       }
@@ -1025,6 +1064,7 @@
     var offset = 0;
     var nextId = id;
     var nextToken = tokenValue;
+    var serverRole = "";
     var pages = 0;
     var hitCap = false;
     function pullPage() {
@@ -1049,6 +1089,7 @@
           if (data.id) nextId = data.id;
           if (data.token) nextToken = data.token;
         }
+        if (data.role === "teacher") serverRole = "teacher";
         var chunk = Array.isArray(data.progress) ? data.progress : [];
         all = all.concat(chunk);
         var hasMore = data.hasMore === true;
@@ -1068,6 +1109,7 @@
           ok: true,
           id: nextId,
           token: nextToken,
+          role: serverRole,
           progress: all,
           capped: hitCap
         };
@@ -1248,7 +1290,7 @@
     }).catch(function () {});
   }
 
-  function loadPlace_(id, tokenValue) {
+  function loadPlace_(id, tokenValue, loginRole) {
     var seq = ++loadPlaceSeq;
     var loadGen = sessionGen;
     var loadId = id == null ? "" : String(id);
@@ -1258,8 +1300,9 @@
       if (seq !== loadPlaceSeq) return;
       if (loadGen !== sessionGen) return;
       if (state.id && rules.idKey(state.id) !== rules.idKey(loadId)) return;
+      var role = (result && result.role) || loginRole;
       if (result && result.ok) {
-        finish_(result.id || loadId, result.token || loadToken, result.progress);
+        finish_(result.id || loadId, result.token || loadToken, result.progress, "", role);
         return;
       }
       if (sessionRejected_(result)) {
@@ -1267,13 +1310,13 @@
         return;
       }
       var err = (result && result.error) ? result.error : "progress_load_failed";
-      finish_((result && result.id) || loadId, (result && result.token) || loadToken, [], err);
+      finish_(loadId, loadToken, [], err, role);
       retryProgressInBackground_(state.id, state.token);
     }).catch(function () {
       if (seq !== loadPlaceSeq) return;
       if (loadGen !== sessionGen) return;
       if (state.id && rules.idKey(state.id) !== rules.idKey(loadId)) return;
-      finish_(loadId, loadToken, [], "network");
+      finish_(loadId, loadToken, [], "network", loginRole);
       retryProgressInBackground_(state.id, state.token);
     });
   }
@@ -1305,12 +1348,13 @@
     return true;
   }
 
-  function finish_(id, tokenValue, progress, progressError) {
+  function finish_(id, tokenValue, progress, progressError, serverRole) {
     sessionGen += 1;
     state.id = id == null ? "" : String(id);
     state.token = tokenValue == null ? "" : String(tokenValue);
     state.progress = Array.isArray(progress) ? progress : [];
     state.progressError = progressError ? String(progressError) : "";
+    if (serverRole !== undefined) applyServerRole_(serverRole);
     saveSession_();
     renderSignedIn_();
     updateStudentChip_();
@@ -1372,13 +1416,16 @@
       return Promise.resolve({ ok: false, error: "pack_not_loaded" });
     }
     var snap = captureSession_();
-    return post_({
+    var saveBody = {
       action: "save_pack",
       id: snap.id,
       token: snap.token,
       program: program,
       progress_json: progressJson == null ? "{}" : String(progressJson)
-    }).then(function (data) {
+    };
+    var saveMeta = teacherSaveMetadata_();
+    if (saveMeta) saveBody.metadata_json = saveMeta;
+    return post_(saveBody).then(function (data) {
       if (!sessionMatches_(snap)) {
         return { ok: false, error: "stale_session" };
       }
@@ -2130,11 +2177,55 @@
     }
   }
 
+  function chipChildByClass_(root, className) {
+    if (!root) return null;
+    if (root.querySelector) {
+      var hit = root.querySelector("." + className);
+      if (hit) return hit;
+    }
+    var kids = root.children || [];
+    for (var i = 0; i < kids.length; i++) {
+      var c = kids[i];
+      if (!c) continue;
+      var cn = String(c.className || "");
+      if (cn === className || cn.indexOf(className) !== -1) return c;
+      if (c.classList && c.classList.contains(className)) return c;
+    }
+    return null;
+  }
+
   function chipWriteText_(text, title) {
     if (!chipEl) return;
-    if (chipEl.textContent !== text) {
-      chipEl.textContent = text;
-      chipDomWriteCount += 1;
+    var teacher = isTeacher();
+    var hasBadge = !!chipChildByClass_(chipEl, "mrj-auth-teacher-badge");
+    if (!teacher && !hasBadge) {
+      if (chipEl.textContent !== text) {
+        chipEl.textContent = text;
+        chipDomWriteCount += 1;
+      }
+    } else {
+      var labelEl = chipChildByClass_(chipEl, "mrj-auth-chip-label");
+      if (!labelEl) {
+        chipEl.textContent = "";
+        labelEl = el_("span", "mrj-auth-chip-label");
+        chipEl.appendChild(labelEl);
+        chipDomWriteCount += 1;
+      }
+      if (labelEl.textContent !== text) {
+        labelEl.textContent = text;
+        chipDomWriteCount += 1;
+      }
+      var badgeEl = chipChildByClass_(chipEl, "mrj-auth-teacher-badge");
+      if (teacher && !badgeEl) {
+        badgeEl = el_("span", "mrj-auth-teacher-badge");
+        badgeEl.textContent = "TEACHER";
+        chipEl.appendChild(badgeEl);
+        chipDomWriteCount += 1;
+      }
+      if (!teacher && badgeEl && badgeEl.parentNode) {
+        badgeEl.parentNode.removeChild(badgeEl);
+        chipDomWriteCount += 1;
+      }
     }
     var t = title == null ? "" : String(title);
     if (chipEl.title !== t) {
@@ -2305,6 +2396,16 @@
     var cur = pill.getAttribute("aria-label") || "";
     if (cur !== label) pill.setAttribute("aria-label", label);
     if (pill.title !== label) pill.title = label;
+    var badge = pill.querySelector && pill.querySelector(".mrj-auth-teacher-badge");
+    if (isTeacher()) {
+      if (!badge) {
+        badge = el_("span", "mrj-auth-teacher-badge");
+        badge.textContent = "TEACHER";
+        pill.appendChild(badge);
+      }
+    } else if (badge) {
+      badge.parentNode.removeChild(badge);
+    }
   }
 
   function wireNamePill_(pill) {
@@ -2985,6 +3086,8 @@
       scorePct: fields.scorePct,
       localDate: localDate
     };
+    var noteMeta = teacherSaveMetadata_();
+    if (noteMeta) payload.metadata_json = noteMeta;
     function queueFailed_(errorCode) {
       var entry = {
         program: payload.program,
@@ -3041,7 +3144,8 @@
     idKey: idKey,
     openProgressPanel: openProgressPanel,
     closeProgressPanel: closeProgressPanel,
-    setPanelRowsProvider: setPanelRowsProvider
+    setPanelRowsProvider: setPanelRowsProvider,
+    isTeacher: isTeacher
   };
 
   if (global.MRJ_AUTH_TEST_MODE) {
@@ -3101,10 +3205,13 @@
       APP_SCORE_PROGRAM_MAP: APP_SCORE_PROGRAM_MAP,
       DAY2_PACK_ITEM_RE: DAY2_PACK_ITEM_RE,
       finish: finish_,
+      applyServerRole: applyServerRole_,
+      isTeacher: isTeacher,
       noteOutboxKey: noteOutboxStorageKey_,
       readNoteOutbox: readNoteOutbox_
     };
   }
 
   global.MRJ_AUTH = api;
+  global.MRJSignin = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);
