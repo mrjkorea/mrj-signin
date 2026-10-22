@@ -2,7 +2,7 @@
 
 Browser sign-in and score history for MRJ classroom apps on GitHub Pages.
 
-**Current client version:** `20261014-daily-words-1.4.6` (`MRJ_AUTH.AUTH_VERSION`)
+**Current client version:** `20261022-teacher-mode-1.5.0` (`MRJ_AUTH.AUTH_VERSION` / `MRJSignin`)
 
 ## Load in an app
 
@@ -25,6 +25,20 @@ Browser sign-in and score history for MRJ classroom apps on GitHub Pages.
 | `data-mrj-own-record` | On a visible element the app uses for its own score/history UI: hide the MRJ chip and **do not** attach click handlers (the app keeps control). |
 | (no attribute) | If a visible `.student-pill` or `[data-mrj-name-pill]` exists, hide the chip and open **My scores** on click/Enter. |
 | `data-mrj-chip-top` / `data-mrj-chip-right` | Optional CSS lengths for chip position (e.g. `3.5rem`). |
+
+## Teacher mode (1.5.0)
+
+When the sign-in server returns `role: "teacher"` (allowlisted **Andrew** account only), the client sets an in-memory session flag — never from `localStorage` alone. Re-validated on resume via `progress`.
+
+```javascript
+if (MRJSignin.isTeacher()) {
+  // unlock screens, levels, days, books, steps; skip gates and timers
+}
+document.addEventListener("mrj-teacher", function () { /* optional */ });
+// <body class="mrj-teacher"> while signed in as teacher
+```
+
+Teacher activity is tagged in server saves (`metadata_json.role`) so class metrics stay clean. Students see no change.
 
 ## Student name chip
 

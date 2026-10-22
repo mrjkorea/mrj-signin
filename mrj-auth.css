@@ -323,11 +323,33 @@ html.mrj-auth-locked body {
 }
 
 /* Fixed student chip — visible on every signed-in app page */
+.mrj-auth-chip-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mrj-auth-teacher-badge {
+  flex-shrink: 0;
+  margin-left: 0.35rem;
+  padding: 0.05rem 0.35rem;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 1.2;
+  color: #fffaf3;
+  background: #1e5c45;
+  border: 1px solid #241c16;
+  border-radius: 0.35rem;
+}
+
 .mrj-auth-chip {
   position: fixed;
   top: calc(0.55rem + env(safe-area-inset-top, 0px));
   right: calc(0.55rem + env(safe-area-inset-right, 0px));
   z-index: 2147482000;
+  display: inline-flex;
+  align-items: center;
   max-width: min(12rem, 42vw);
   padding: 0.45rem 0.75rem;
   border: 2px solid #241c16;

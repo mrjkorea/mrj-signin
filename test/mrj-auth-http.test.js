@@ -71,7 +71,7 @@ function jsonResponse(obj, delayMs) {
 describe("mrj-auth HTTP client", () => {
   it("exposes version marker", () => {
     const { auth } = loadAuth(() => Promise.resolve({ text: () => Promise.resolve("{}") }));
-    assert.equal(auth.AUTH_VERSION, "20261014-daily-words-1.4.6");
+    assert.equal(auth.AUTH_VERSION, "20261022-teacher-mode-1.5.0");
   });
 
   it("dashboard panel includes Words by day block", () => {
