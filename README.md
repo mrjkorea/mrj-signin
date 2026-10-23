@@ -2,7 +2,7 @@
 
 Browser sign-in and score history for MRJ classroom apps on GitHub Pages.
 
-**Current client version:** `20261022-teacher-mode-1.5.0` (`MRJ_AUTH.AUTH_VERSION` / `MRJSignin`)
+**Current client version:** `20261022-block-id-1.6.0` (`MRJ_AUTH.AUTH_VERSION` / `MRJSignin`)
 
 ## Load in an app
 

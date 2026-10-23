@@ -1,3 +1,16 @@
+# Manual Apps Script redeploy — sign-in server **1.6.0**
+
+## 1.6.0 — block ID (`status` column)
+
+- **StudentAccounts** gains a trailing **`status`** column (blank or `approved` = active; `blocked` refuses sign-in / pack I/O with `id_blocked`). Existing rows stay blank.
+- **Teacher API:** `set_status` with `id`, `status` (`approved`|`blocked`), and teacher auth (`teacher_secret` or allowlisted teacher token).
+- **Register** fills **`created_at`** in KST (`…+09:00`) when the column exists (unchanged header layout).
+- **Client:** `mrj-auth.js` `AUTH_VERSION` `20261022-block-id-1.6.0` shows *This ID is not active. Please ask Mr. Jay.* and signs out locally.
+
+**REDEPLOY:** Replace **`Code.gs`** in the MRJ Sign-In Apps Script project, then **Deploy → Manage deployments → Edit → New version** (keep the same `/exec` URL). Publish updated **`mrj-auth.js`** on GitHub Pages in the same release window.
+
+---
+
 # Manual Apps Script redeploy — sign-in server **1.5.0**
 
 The browser client in `mrj-auth.js` sends `program` and follows paging on the `progress` action. It stays compatible with older deployments (extra fields are ignored until this server is live). **Merge the client PR before or with deploy** so students are never blocked when progress load fails.

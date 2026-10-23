@@ -7,7 +7,7 @@
 (function (global) {
   "use strict";
 
-  var AUTH_VERSION = "20261022-teacher-mode-1.5.0";
+  var AUTH_VERSION = "20261022-block-id-1.6.0";
   var ENDPOINT = "https://script.google.com/macros/s/AKfycbwtJTUO3gbcMrlAwsn1feWxyp7Rw2cxpfe1bOT9v2rxmQHa2Tlc6pFNWAjU6ZAdlD6kFQ/exec";
   var SESSION_KEY = "mrj.auth.session";
   var NOTE_OUTBOX_PREFIX = "mrj.auth.noteOutbox.";
@@ -24,7 +24,8 @@
     checking: "Checking your ID…",
     loading_place: "Loading your place…",
     still_signing_in: "Still signing you in… You can wait here or go back and try again in a moment.",
-    resume_busy: "The sign-in server is slow. You are signed in on this device — we are double-checking in the background."
+    resume_busy: "The sign-in server is slow. You are signed in on this device — we are double-checking in the background.",
+    id_blocked: "This ID is not active. Please ask Mr. Jay."
   };
 
   var NO_RETRY_ERRORS = {
@@ -33,7 +34,8 @@
     user_does_not_exist: true,
     id_taken: true,
     password_mismatch: true,
-    bad_token: true
+    bad_token: true,
+    id_blocked: true
   };
 
   function idKey(id) {
@@ -711,6 +713,7 @@
         finish_(result.id || saved.id, result.token || saved.token, result.progress, "", result.role);
         return;
       }
+      if (signOutIfBlocked_(result)) return;
       if (sessionRejected_(result)) {
         clearSession_();
         renderDoors_();
@@ -733,6 +736,7 @@
     fetchAllProgress_(saved.id, saved.token, appProgram_()).then(function (result) {
       if (gen !== viewGen) return;
       if (!state.id || rules.idKey(state.id) !== rules.idKey(saved.id)) return;
+      if (signOutIfBlocked_(result)) return;
       if (sessionRejected_(result)) {
         signOut();
         return;
@@ -792,7 +796,7 @@
     return isTeacher() ? { role: "teacher" } : null;
   }
 
-  function signOut() {
+  function signOut(notice) {
     viewGen += 1;
     sessionGen += 1;
     loadPlaceSeq += 1;
@@ -806,7 +810,17 @@
     disconnectChipObserver_();
     syncTeacherChrome_(true);
     updateStudentChip_();
-    if (rootEl) renderDoors_();
+    if (rootEl) renderDoors_(notice);
+  }
+
+  function isIdBlockedError_(data) {
+    return !!(data && String(data.error) === "id_blocked");
+  }
+
+  function signOutIfBlocked_(data) {
+    if (!isIdBlockedError_(data)) return false;
+    signOut(MESSAGES.id_blocked);
+    return true;
   }
 
   function renderDoors_(notice) {
@@ -1279,6 +1293,7 @@
     fetchAllProgress_(id, tokenValue, appProgram_()).then(function (result) {
       if (gen !== viewGen) return;
       if (!state.id || rules.idKey(state.id) !== rules.idKey(id)) return;
+      if (signOutIfBlocked_(result)) return;
       if (!result || !result.ok) return;
       state.id = result.id || id;
       state.token = result.token || tokenValue;
@@ -1305,6 +1320,7 @@
         finish_(result.id || loadId, result.token || loadToken, result.progress, "", role);
         return;
       }
+      if (signOutIfBlocked_(result)) return;
       if (sessionRejected_(result)) {
         renderLogin_("Sign in again.", [loadId, ""]);
         return;
@@ -1387,6 +1403,9 @@
         return { ok: false, error: "stale_session" };
       }
       if (!data || !data.ok) {
+        if (signOutIfBlocked_(data)) {
+          return { ok: false, error: "id_blocked", message: MESSAGES.id_blocked };
+        }
         packState[program] = {
           loaded: false,
           json: "",
@@ -1439,6 +1458,9 @@
         ps.loaded = false;
         ps.error = data && data.error ? data.error : "save_failed";
       }
+      if (signOutIfBlocked_(data)) {
+        return { ok: false, error: "id_blocked", message: MESSAGES.id_blocked };
+      }
       return data || { ok: false, error: "save_failed" };
     }).catch(function () {
       if (!sessionMatches_(snap)) {
@@ -1468,6 +1490,9 @@
       if (!sessionMatches_(snap)) {
         return { ok: false, error: "stale_session", progress: [] };
       }
+      if (signOutIfBlocked_(result)) {
+        return { ok: false, error: "id_blocked", message: MESSAGES.id_blocked, progress: [] };
+      }
       return result;
     });
   }
@@ -1486,6 +1511,7 @@
 
   function sessionRejected_(data) {
     if (!data) return false;
+    if (isIdBlockedError_(data)) return true;
     if (data.error === "user_does_not_exist" || data.error === "bad_token") return true;
     return data.message === rules.MESSAGES.user_does_not_exist;
   }
