@@ -6,7 +6,7 @@
  * Passwords are stored for an exact match and are never returned or logged.
  */
 var SPREADSHEET_ID = "1bpgekxlektvwpsef1PmIkxPiDuHrkVXFaAy-OmwqL5c";
-var APP_VERSION = "1.5.0";
+var APP_VERSION = "1.6.0";
 var SIGNIN_TEACHER_ROLE_KEYS = ["andrew"];
 var ACCOUNTS_SHEET = "StudentAccounts";
 var SCORE_SHEET = "StudentScoreIndex";
@@ -35,7 +35,7 @@ var TEACHER_SECRET_FAIL_SLEEP_MAX_MS = 5000;
 var METRICS_READ_BATCH = 2000;
 var FLUSH_LOCK_MS = 5000;
 
-var ACCOUNT_HEADERS = ["id_display", "id_key", "password", "created_at", "last_login", "token"];
+var ACCOUNT_HEADERS = ["id_display", "id_key", "password", "created_at", "last_login", "token", "status"];
 var SCORE_HEADERS = ["id_key", "program", "item_id", "score_value", "score_max", "score_pct", "local_date", "updated_at"];
 
 var MSG_BLANK = "Type an ID and a password.";
@@ -43,6 +43,7 @@ var MSG_MISSING = "User does not exist.";
 var MSG_WRONG = "Wrong password.";
 var MSG_TAKEN = "That ID is already used. Log in instead.";
 var MSG_TOKEN = "Sign in again.";
+var MSG_ID_BLOCKED = "This ID is not active. Please ask Mr. Jay.";
 
 function doGet() {
   return json_({ status: "ok", app: "mrj-signin", version: APP_VERSION });
@@ -63,6 +64,7 @@ function doPost(e) {
     if (action === "student_dashboard") return json_(studentDashboard_(body));
     if (action === "teacher_student_dashboard") return json_(teacherStudentDashboard_(body));
     if (action === "teacher_app_roster") return json_(teacherAppRoster_(body));
+    if (action === "set_status") return json_(setStatus_(body));
     return json_({ ok: false, error: "bad_action", message: "Unknown action." });
   } catch (err) {
     return json_({ ok: false, error: "server", message: "Something went wrong." });
@@ -79,7 +81,8 @@ function register_(body) {
     if (existing) {
       return { ok: false, error: "id_taken", message: MSG_TAKEN };
     }
-    var now = new Date().toISOString();
+    var now = kstIsoNow_();
+    var loginStamp = new Date().toISOString();
     var token = newToken_();
     var display = String(body.id);
     appendAccount_(ss, {
@@ -87,8 +90,9 @@ function register_(body) {
       id_key: key,
       password: String(body.password),
       created_at: now,
-      last_login: now,
-      token: token
+      last_login: loginStamp,
+      token: token,
+      status: ""
     });
     bustAccountCache_(key);
     appendSignInDeviceMetric_(ss, key, display, body);
@@ -116,6 +120,8 @@ function login_(body) {
     if (String(existing.password) !== String(body.password)) {
       return { ok: false, error: "wrong_password", message: MSG_WRONG };
     }
+    var blocked = rejectIfAccountBlocked_(existing);
+    if (blocked) return blocked;
     var token = newToken_();
     var now = new Date().toISOString();
     var tokenField = pushToken_(existing.token, token);
@@ -291,6 +297,87 @@ function teacherSecretFailurePenalty_() {
       Utilities.sleep(delay);
     } catch (ignore) {}
   }
+}
+
+function kstIsoNow_() {
+  var now = new Date();
+  var formatted = Utilities.formatDate(now, "Asia/Seoul", "yyyy-MM-dd'T'HH:mm:ss");
+  return formatted + "+09:00";
+}
+
+function accountHeaderMap_(sheet) {
+  return scoreIndexHeaderMap_(sheet);
+}
+
+function syncAccountHeaders_(sheet) {
+  if (!sheet) return;
+  var map = accountHeaderMap_(sheet);
+  var col = sheet.getLastColumn();
+  if (col < 1) col = 0;
+  for (var h = 0; h < ACCOUNT_HEADERS.length; h++) {
+    var name = ACCOUNT_HEADERS[h];
+    if (map[name] != null) continue;
+    col += 1;
+    var cell = sheet.getRange(1, col);
+    cell.setNumberFormat("@");
+    cell.setValue(name);
+    map[name] = col - 1;
+  }
+}
+
+function accountStatusFromValue_(raw) {
+  return asString_(raw).trim().toLowerCase();
+}
+
+function accountIsBlocked_(status) {
+  return accountStatusFromValue_(status) === "blocked";
+}
+
+function accountIsActive_(status) {
+  var s = accountStatusFromValue_(status);
+  return !s || s === "approved";
+}
+
+function rejectIfAccountBlocked_(account) {
+  if (!account || accountIsActive_(account.status)) return null;
+  return { ok: false, error: "id_blocked", message: MSG_ID_BLOCKED };
+}
+
+function setStatus_(body) {
+  var gate = requireTeacherAccess_(body);
+  if (!gate.ok) return gate;
+  var targetId = textOrEmpty_(body.id);
+  if (!targetId) {
+    return { ok: false, error: "bad_id", message: "Missing student id." };
+  }
+  var status = accountStatusFromValue_(body.status);
+  if (status !== "approved" && status !== "blocked") {
+    return { ok: false, error: "bad_status", message: "Status must be approved or blocked." };
+  }
+  return withLock_(function () {
+    var ss = book_();
+    var key = idKey_(targetId);
+    var existing = findAccount_(ss, key, true);
+    if (!existing) {
+      return { ok: false, error: "user_does_not_exist", message: MSG_MISSING };
+    }
+    var sheet = existing.sheet;
+    syncAccountHeaders_(sheet);
+    var map = accountHeaderMap_(sheet);
+    if (map.status == null) {
+      return { ok: false, error: "server", message: "Something went wrong." };
+    }
+    var stored = status === "approved" ? "" : "blocked";
+    writeAccountCells_(sheet, existing.row, { status: stored });
+    bustAccountCache_(key);
+    return {
+      ok: true,
+      error: "",
+      message: "",
+      id: existing.id_display,
+      status: status
+    };
+  });
 }
 
 function requireTeacherAccess_(body) {
@@ -1133,6 +1220,8 @@ function requireToken_(ss, body, bustCache) {
   if (!tokenMatches_(existing.token, given)) {
     return { ok: false, error: "bad_token", message: MSG_TOKEN };
   }
+  var blocked = rejectIfAccountBlocked_(existing);
+  if (blocked) return blocked;
   return {
     ok: true,
     id: existing.id_display,
@@ -1326,6 +1415,9 @@ function findAccount_(ss, key, skipCache) {
   var sheet = ensureAccounts_(ss);
   if (sheet.getLastRow() < 2) return null;
   var values = sheet.getDataRange().getValues();
+  var map = accountHeaderMap_(sheet);
+  var tokenCol = map.token != null ? map.token : 5;
+  var statusCol = map.status;
   for (var i = 1; i < values.length; i++) {
     if (asString_(values[i][1]) !== key) continue;
     var row = {
@@ -1334,7 +1426,8 @@ function findAccount_(ss, key, skipCache) {
       id_display: asString_(values[i][0]),
       id_key: asString_(values[i][1]),
       password: asString_(values[i][2]),
-      token: asString_(values[i][5])
+      token: asString_(values[i][tokenCol]),
+      status: statusCol != null ? asString_(values[i][statusCol]) : ""
     };
     writeAccountCache_(key, row);
     return row;
@@ -1350,7 +1443,8 @@ function hydrateCachedAccount_(ss, cached) {
     id_display: cached.id_display,
     id_key: cached.id_key,
     password: cached.password,
-    token: cached.token
+    token: cached.token,
+    status: cached.status == null ? "" : cached.status
   };
 }
 
@@ -1375,7 +1469,8 @@ function writeAccountCache_(key, row) {
       id_display: row.id_display,
       id_key: row.id_key,
       password: row.password,
-      token: row.token
+      token: row.token,
+      status: row.status == null ? "" : row.status
     };
     CacheService.getScriptCache().put(accountCacheKey_(key), JSON.stringify(payload), ACCOUNT_CACHE_TTL_SEC);
   } catch (ignore) {}
@@ -1390,14 +1485,20 @@ function bustAccountCache_(key) {
 function appendAccount_(ss, rec) {
   var sheet = ensureAccounts_(ss);
   var rowNumber = Math.max(sheet.getLastRow(), 1) + 1;
-  var row = [
-    textCell_(rec.id_display),
-    textCell_(rec.id_key),
-    textCell_(rec.password),
-    textCell_(rec.created_at),
-    textCell_(rec.last_login),
-    textCell_(rec.token)
-  ];
+  syncAccountHeaders_(sheet);
+  var row = [];
+  for (var h = 0; h < ACCOUNT_HEADERS.length; h++) {
+    var colName = ACCOUNT_HEADERS[h];
+    var val = "";
+    if (colName === "id_display") val = rec.id_display;
+    else if (colName === "id_key") val = rec.id_key;
+    else if (colName === "password") val = rec.password;
+    else if (colName === "created_at") val = rec.created_at;
+    else if (colName === "last_login") val = rec.last_login;
+    else if (colName === "token") val = rec.token;
+    else if (colName === "status") val = rec.status == null ? "" : rec.status;
+    row.push(textCell_(val));
+  }
   var range = sheet.getRange(rowNumber, 1, 1, row.length);
   range.setNumberFormat("@");
   range.setValues([row]);
@@ -1413,6 +1514,15 @@ function writeAccountCells_(sheet, rowNumber, fields) {
     var tokenCell = sheet.getRange(rowNumber, 6);
     tokenCell.setNumberFormat("@");
     tokenCell.setValue(textCell_(fields.token));
+  }
+  if (fields.status != null) {
+    syncAccountHeaders_(sheet);
+    var map = accountHeaderMap_(sheet);
+    if (map.status != null) {
+      var statusCell = sheet.getRange(rowNumber, map.status + 1);
+      statusCell.setNumberFormat("@");
+      statusCell.setValue(textCell_(fields.status));
+    }
   }
 }
 
@@ -1453,7 +1563,9 @@ function upsertScore_(ss, rec) {
 }
 
 function ensureAccounts_(ss) {
-  return ensureSheet_(ss, ACCOUNTS_SHEET, ACCOUNT_HEADERS);
+  var sheet = ensureSheet_(ss, ACCOUNTS_SHEET, ACCOUNT_HEADERS);
+  syncAccountHeaders_(sheet);
+  return sheet;
 }
 
 function ensureScoreSheet_(ss) {

@@ -184,6 +184,28 @@ function createGasContext() {
       getUuid() {
         return "00000000-0000-4000-8000-000000000001";
       },
+      formatDate(date, timeZone, format) {
+        const d = date instanceof Date ? date : new Date(date);
+        const pad = (n) => String(n).padStart(2, "0");
+        if (timeZone === "Asia/Seoul" && format === "yyyy-MM-dd'T'HH:mm:ss") {
+          const utc = d.getTime() + d.getTimezoneOffset() * 60000;
+          const kst = new Date(utc + 9 * 3600000);
+          return (
+            kst.getFullYear() +
+            "-" +
+            pad(kst.getMonth() + 1) +
+            "-" +
+            pad(kst.getDate()) +
+            "T" +
+            pad(kst.getHours()) +
+            ":" +
+            pad(kst.getMinutes()) +
+            ":" +
+            pad(kst.getSeconds())
+          );
+        }
+        return d.toISOString();
+      },
       sleep() {}
     },
     ContentService: {
