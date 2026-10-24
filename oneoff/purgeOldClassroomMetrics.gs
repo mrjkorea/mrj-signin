@@ -97,11 +97,24 @@ function purgeOldClassroomMetrics_(dryRun) {
     }
     // full-row compare on first, last and every 997th row (values only, never logged)
     var idx = [2, N]; for (var r = 2; r <= N; r += 997) idx.push(r);
+    var norm = function (v) {
+      if (v instanceof Date) return String(v.getTime());
+      if (typeof v === "number") return String(Math.round(v * 1e6) / 1e6);
+      if (typeof v === "boolean") return v ? "TRUE" : "FALSE";
+      var t = String(v).trim();
+      if (/^-?\d+(\.\d+)?$/.test(t)) return String(Math.round(Number(t) * 1e6) / 1e6);
+      var pm = purgeParseMs_(t); if (/^\d{4}-\d{2}-\d{2}/.test(t) && pm) return String(pm);
+      return t;
+    };
+    var badCols = {};
     for (var m = 0; m < idx.length; m++) {
-      var a = JSON.stringify(sh.getRange(idx[m], 1, 1, lastCol).getDisplayValues()[0]);
-      var b = JSON.stringify(arc.getRange(idx[m], 1, 1, lastCol).getDisplayValues()[0]);
-      if (a !== b) { out.error = "archive_row_mismatch"; out.badRow = idx[m]; return done(out); }
+      var a = sh.getRange(idx[m], 1, 1, lastCol).getValues()[0];
+      var b = arc.getRange(idx[m], 1, 1, lastCol).getValues()[0];
+      for (var c = 0; c < lastCol; c++) {
+        if (norm(a[c]) !== norm(b[c])) { badCols[header[c]] = (badCols[header[c]] || 0) + 1; if (!out.badRow) out.badRow = idx[m]; }
+      }
     }
+    if (out.badRow) { out.error = "archive_row_mismatch"; out.badCols = badCols; out.sampled = idx.length; return done(out); }
     out.sampledRowsCompared = idx.length;
     out.wouldDelete = del;
     out.expectedRemaining = lastRow - 1 - del;
