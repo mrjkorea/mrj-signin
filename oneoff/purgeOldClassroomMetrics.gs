@@ -10,7 +10,7 @@
  *
  * Touches only the ClassroomMetrics tab (rows 2..N). Never logs cell contents.
  */
-var PURGE_ARCHIVE_ID = "1_Q8IltvVn_vbEsxN-0YdeeTc674dyJfhHhimcZy0Znw";
+var PURGE_ARCHIVE_ID = "1gyEJDD3p5DqsHVo_1SmKCrLyylFGRzvQmiRPPmX_7r4";
 var PURGE_EXPECTED_ARCHIVE_ROWS = 128304;
 var PURGE_CUTOFF_MS = Date.parse("2026-10-01T00:00:00+09:00");
 
