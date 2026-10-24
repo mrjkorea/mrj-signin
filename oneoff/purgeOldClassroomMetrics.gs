@@ -134,3 +134,31 @@ function purgeOldClassroomMetrics_(dryRun) {
     lock.releaseLock();
   }
 }
+
+// One-off: copy local_date and session_id (values + number formats) from live rows 2..128305
+// into the archive, archive only. Then run the dry run. Never touches the live sheet.
+function purgeFixArchiveThenDryRun() {
+  var out = {fix: {}};
+  var live = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(METRICS_SHEET);
+  var arcSs = SpreadsheetApp.openById(PURGE_ARCHIVE_ID);
+  var arc = arcSs.getSheetByName(METRICS_SHEET) || arcSs.getSheets()[0];
+  var n = PURGE_EXPECTED_ARCHIVE_ROWS;
+  if (arc.getLastRow() - 1 !== n) { Logger.log(JSON.stringify({ok:false, error:"archive_rows"})); return; }
+  var lh = live.getRange(1, 1, 1, live.getLastColumn()).getValues()[0].map(function (h) { return String(h).trim(); });
+  var ah = arc.getRange(1, 1, 1, arc.getLastColumn()).getValues()[0].map(function (h) { return String(h).trim(); });
+  ["local_date", "session_id"].forEach(function (name) {
+    var lc = lh.indexOf(name) + 1, ac = ah.indexOf(name) + 1;
+    if (lc < 1 || ac < 1 || lc !== ac) { out.fix[name] = "col_not_found"; return; }
+    for (var s = 2; s <= n + 1; s += 10000) {
+      var len = Math.min(10000, n + 2 - s);
+      var src = live.getRange(s, lc, len, 1);
+      var dst = arc.getRange(s, ac, len, 1);
+      dst.setNumberFormats(src.getNumberFormats());
+      dst.setValues(src.getValues());
+    }
+    SpreadsheetApp.flush();
+    out.fix[name] = "copied";
+  });
+  Logger.log(JSON.stringify(out));
+  purgeOldClassroomMetricsDryRun();
+}
