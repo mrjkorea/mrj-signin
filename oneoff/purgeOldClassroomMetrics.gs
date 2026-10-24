@@ -110,8 +110,10 @@ function purgeOldClassroomMetrics_(dryRun) {
     for (var m = 0; m < idx.length; m++) {
       var a = sh.getRange(idx[m], 1, 1, lastCol).getValues()[0];
       var b = arc.getRange(idx[m], 1, 1, lastCol).getValues()[0];
+      var ad = sh.getRange(idx[m], 1, 1, lastCol).getDisplayValues()[0];
+      var bd = arc.getRange(idx[m], 1, 1, lastCol).getDisplayValues()[0];
       for (var c = 0; c < lastCol; c++) {
-        if (norm(a[c]) !== norm(b[c])) { badCols[header[c]] = (badCols[header[c]] || 0) + 1; if (!out.badRow) out.badRow = idx[m]; }
+        if (String(ad[c]).trim() !== String(bd[c]).trim() && norm(a[c]) !== norm(b[c])) { badCols[header[c]] = (badCols[header[c]] || 0) + 1; if (!out.badRow) out.badRow = idx[m]; }
       }
     }
     if (out.badRow) { out.error = "archive_row_mismatch"; out.badCols = badCols; out.sampled = idx.length; return done(out); }
@@ -143,7 +145,7 @@ function purgeFixArchiveThenDryRun() {
   var arcSs = SpreadsheetApp.openById(PURGE_ARCHIVE_ID);
   var arc = arcSs.getSheetByName(METRICS_SHEET) || arcSs.getSheets()[0];
   var n = PURGE_EXPECTED_ARCHIVE_ROWS;
-  if (arc.getLastRow() - 1 !== n) { Logger.log(JSON.stringify({ok:false, error:"archive_rows"})); return; }
+  if (arc.getLastRow() - 1 !== n) { console.log(JSON.stringify({ok:false, error:"archive_rows"})); return; }
   var lh = live.getRange(1, 1, 1, live.getLastColumn()).getValues()[0].map(function (h) { return String(h).trim(); });
   var ah = arc.getRange(1, 1, 1, arc.getLastColumn()).getValues()[0].map(function (h) { return String(h).trim(); });
   ["local_date", "session_id"].forEach(function (name) {
@@ -153,12 +155,13 @@ function purgeFixArchiveThenDryRun() {
       var len = Math.min(10000, n + 2 - s);
       var src = live.getRange(s, lc, len, 1);
       var dst = arc.getRange(s, ac, len, 1);
-      dst.setNumberFormats(src.getNumberFormats());
-      dst.setValues(src.getValues());
+      var shown = src.getDisplayValues();
+      dst.setNumberFormat("@");
+      dst.setValues(shown);
     }
     SpreadsheetApp.flush();
     out.fix[name] = "copied";
   });
-  Logger.log(JSON.stringify(out));
+  console.log(JSON.stringify(out));
   purgeOldClassroomMetricsDryRun();
 }
