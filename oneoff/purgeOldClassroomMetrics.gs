@@ -39,9 +39,12 @@ function purgeOldClassroomMetrics_(dryRun) {
     // 1. backfill must not be mid-run (its cursor is a row number; deleting rows would corrupt it)
     var cur = PropertiesService.getScriptProperties().getProperty(BACKFILL_PROP);
     if (cur) { out.error = "backfill_in_progress"; out.backfillCursor = cur; return done(out); }
-    var trig = ScriptApp.getProjectTriggers().filter(function (t) {
-      return /backfill/i.test(t.getHandlerFunction());
-    });
+    var trig = [];
+    try {
+      trig = ScriptApp.getProjectTriggers().filter(function (t) {
+        return /backfill/i.test(t.getHandlerFunction());
+      });
+    } catch (e) { out.triggerCheck = "skipped_no_scope"; }
     if (trig.length) { out.error = "backfill_trigger_present"; out.triggers = trig.length; return done(out); }
 
     // 2. live sheet
