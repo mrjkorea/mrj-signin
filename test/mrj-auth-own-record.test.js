@@ -34,7 +34,7 @@ describe("data-mrj-own-record", () => {
     auth.mount(root, { app: "word-master" });
     await wait(3500);
     auth._test.applyStudentChrome();
-    const chip = body.children.find((c) => c.id === "mrj-auth-student-chip");
+    const chip = body.querySelector("#mrj-auth-student-chip");
     assert.ok(chip);
     assert.equal(chip.hidden, true);
     assert.equal(own.getAttribute("data-mrj-pill-wired"), null);

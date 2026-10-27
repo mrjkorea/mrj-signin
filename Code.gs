@@ -65,6 +65,7 @@ function doPost(e) {
     if (action === "teacher_student_dashboard") return json_(teacherStudentDashboard_(body));
     if (action === "teacher_app_roster") return json_(teacherAppRoster_(body));
     if (action === "set_status") return json_(setStatus_(body));
+    if (action === "teacher_unlock") return json_(teacherUnlock_(body));
     return json_({ ok: false, error: "bad_action", message: "Unknown action." });
   } catch (err) {
     return json_({ ok: false, error: "server", message: "Something went wrong." });
@@ -408,6 +409,21 @@ function requireTeacherAccess_(body) {
     }
   }
   return { ok: false, error: "forbidden", message: "Teachers only." };
+}
+
+function teacherUnlock_(body) {
+  var tokenGate = requireToken_(book_(), body, true);
+  if (!tokenGate.ok) return tokenGate;
+  var access = requireTeacherAccess_(body);
+  if (!access.ok) return access;
+  return {
+    ok: true,
+    error: "",
+    message: "",
+    id: tokenGate.id,
+    token: asString_(body.token),
+    role: "teacher"
+  };
 }
 
 function teacherListStudents_(body) {

@@ -5,11 +5,11 @@ const path = require("path");
 const vm = require("vm");
 
 function mkNode(tag, className) {
+  const classNames = className ? className.split(/\s+/).filter(Boolean) : [];
   const n = {
     nodeType: 1,
     tagName: tag,
-    className: className || "",
-    classNames: className ? className.split(/\s+/) : [],
+    classNames,
     children: [],
     listeners: {},
     textContent: "",
@@ -72,6 +72,17 @@ function mkNode(tag, className) {
       return null;
     },
     querySelector(sel) {
+      if (sel && sel.startsWith(".")) {
+        const cls = sel.slice(1);
+        let found = null;
+        (function walk(x) {
+          x.children.forEach((c) => {
+            if (!found && c.classNames && c.classNames.includes(cls)) found = c;
+            walk(c);
+          });
+        })(n);
+        return found;
+      }
       if (sel === ".mrj-auth-panel-body") {
         let found = null;
         (function walk(x) {
@@ -96,6 +107,14 @@ function mkNode(tag, className) {
       }
       return out;
     },
+    contains(child) {
+      if (!child) return false;
+      if (child === n) return true;
+      for (let i = 0; i < n.children.length; i++) {
+        if (n.children[i].contains(child)) return true;
+      }
+      return false;
+    },
     appendChild(c) {
       c.parentNode = n;
       n.children.push(c);
@@ -112,11 +131,28 @@ function mkNode(tag, className) {
     get firstChild() {
       return n.children[0] || null;
     },
+    get nextSibling() {
+      if (!n.parentNode) return null;
+      const idx = n.parentNode.children.indexOf(n);
+      return idx >= 0 ? n.parentNode.children[idx + 1] || null : null;
+    },
+    get parentElement() {
+      return n.parentNode;
+    },
     addEventListener(ev, fn) {
       n.listeners[ev] = n.listeners[ev] || [];
       n.listeners[ev].push(fn);
     }
   };
+  Object.defineProperty(n, "className", {
+    enumerable: true,
+    get() {
+      return n.classNames.join(" ");
+    },
+    set(v) {
+      n.classNames = String(v || "").split(/\s+/).filter(Boolean);
+    }
+  });
   return n;
 }
 
@@ -171,8 +207,24 @@ function loadMrjAuth(fetchImpl, session, timeoutMs) {
       body,
       currentScript: null,
       querySelector: (sel) => {
-        if (sel === "#mrj-auth-student-chip") {
-          return body.children.find((c) => c.id === "mrj-auth-student-chip") || null;
+        if (sel === "#mrj-auth-student-chip" || sel === "#mrj-auth-chip-chrome" || sel === ".mrj-auth-teacher-btn") {
+          let found = null;
+          (function walk(x) {
+            x.children.forEach((c) => {
+              if (!found && sel === "#mrj-auth-student-chip" && c.id === "mrj-auth-student-chip") found = c;
+              if (!found && sel === "#mrj-auth-chip-chrome" && c.id === "mrj-auth-chip-chrome") found = c;
+              if (
+                !found &&
+                sel === ".mrj-auth-teacher-btn" &&
+                c.classNames &&
+                c.classNames.includes("mrj-auth-teacher-btn")
+              ) {
+                found = c;
+              }
+              walk(c);
+            });
+          })(body);
+          return found;
         }
         if (sel && sel.indexOf("student-pill") !== -1) {
           return body.children.find((c) => c.classNames && c.classNames.includes("student-pill")) || null;
@@ -201,6 +253,7 @@ function loadMrjAuth(fetchImpl, session, timeoutMs) {
     removeEventListener() {}
   };
   sandbox.globalThis = sandbox;
+  body.querySelector = (sel) => sandbox.document.querySelector(sel);
   let code = fs.readFileSync(path.join(__dirname, "..", "..", "mrj-auth.js"), "utf8");
   code = code.replace(
     "var REQUEST_TIMEOUT_MS = 30000;",

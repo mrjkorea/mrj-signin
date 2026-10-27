@@ -50,7 +50,7 @@ describe("student chip and progress panel", () => {
     auth.mount(root, { app: "word-master", onReady: () => {} });
     auth._test.send({ action: "login", id: "kid1", password: "pw" }, () => {}, () => {});
     await wait(3500);
-    const chip = body.children.find((c) => c.id === "mrj-auth-student-chip");
+    const chip = body.querySelector("#mrj-auth-student-chip");
     assert.ok(chip);
     assert.equal(chip.hidden, false);
     assert.equal(chip.textContent, "kid1");
@@ -66,7 +66,7 @@ describe("student chip and progress panel", () => {
     auth.mount(root, { app: "mrj-zap-grammar-books", chipOff: true, onReady: () => {} });
     auth._test.send({ action: "login", id: "kid1", password: "pw" }, () => {}, () => {});
     await wait(3500);
-    const chip = body.children.find((c) => c.id === "mrj-auth-student-chip");
+    const chip = body.querySelector("#mrj-auth-student-chip");
     assert.ok(chip);
     assert.equal(chip.hidden, true);
     auth.openProgressPanel();

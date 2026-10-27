@@ -35,7 +35,7 @@ describe("student name pill", () => {
     assert.equal(auth.student(), "kid");
     auth._test.updateStudentChip();
     assert.ok(auth._test.findNamePill());
-    const chip = body.children.find((c) => c.id === "mrj-auth-student-chip");
+    const chip = body.querySelector("#mrj-auth-student-chip");
     assert.ok(chip);
     assert.equal(chip.hidden, true);
     assert.equal(pill.getAttribute("data-mrj-pill-wired"), "1");
