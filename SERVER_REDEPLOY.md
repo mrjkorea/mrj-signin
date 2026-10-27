@@ -72,3 +72,9 @@ If you roll back to the pre-1.4.0 script after students have used 1.4.0:
 - `MRJ_AUTH.loadProgressForApp(program?)` — paged score rows for one program.
 - `MRJ_AUTH.loadPack(program?)` / `MRJ_AUTH.savePack(program?, json)` — blob progress; save only after successful load (`MRJ_AUTH.packReady(program)`).
 - `MRJ_AUTH.progressError()` — non-empty when progress did not load (apps must not overwrite server data).
+
+# 1.6.2 — teacher_unlock
+
+- Keeps **1.6.1** `study_teacher_check` / `STUDY_TEACHER_PIN`.
+- Adds **`teacher_unlock`**: signed-in student + `teacher_secret` (`MRJ_TEACHER_SECRET`) → `{ role: "teacher" }` for chip Teacher button.
+- **REDEPLOY:** Replace `Code.gs`, Deploy → Manage deployments → Edit → New version (same `/exec` URL).

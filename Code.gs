@@ -6,7 +6,7 @@
  * Passwords are stored for an exact match and are never returned or logged.
  */
 var SPREADSHEET_ID = "1bpgekxlektvwpsef1PmIkxPiDuHrkVXFaAy-OmwqL5c";
-var APP_VERSION = "1.6.0";
+var APP_VERSION = "1.6.2";
 var SIGNIN_TEACHER_ROLE_KEYS = ["andrew"];
 var ACCOUNTS_SHEET = "StudentAccounts";
 var SCORE_SHEET = "StudentScoreIndex";
@@ -66,6 +66,7 @@ function doPost(e) {
     if (action === "teacher_app_roster") return json_(teacherAppRoster_(body));
     if (action === "set_status") return json_(setStatus_(body));
     if (action === "teacher_unlock") return json_(teacherUnlock_(body));
+    if (action === "study_teacher_check") return json_(studyTeacherCheck_(body));
     return json_({ ok: false, error: "bad_action", message: "Unknown action." });
   } catch (err) {
     return json_({ ok: false, error: "server", message: "Something went wrong." });
@@ -409,21 +410,6 @@ function requireTeacherAccess_(body) {
     }
   }
   return { ok: false, error: "forbidden", message: "Teachers only." };
-}
-
-function teacherUnlock_(body) {
-  var tokenGate = requireToken_(book_(), body, true);
-  if (!tokenGate.ok) return tokenGate;
-  var access = requireTeacherAccess_(body);
-  if (!access.ok) return access;
-  return {
-    ok: true,
-    error: "",
-    message: "",
-    id: tokenGate.id,
-    token: asString_(body.token),
-    role: "teacher"
-  };
 }
 
 function teacherListStudents_(body) {
@@ -2367,4 +2353,32 @@ function nameFromSession_(sessionId) {
   var key = idKey_(name);
   if (!key || key === "unknown" || key === "anon" || key === "mrj") return "";
   return name;
+}
+
+/** Study World "Teacher" link: checks a PIN kept only in Script Properties. Rate-limited like teacher_secret. */
+function teacherUnlock_(body) {
+  var tokenGate = requireToken_(book_(), body, true);
+  if (!tokenGate.ok) return tokenGate;
+  var access = requireTeacherAccess_(body);
+  if (!access.ok) return access;
+  return {
+    ok: true,
+    error: "",
+    message: "",
+    id: tokenGate.id,
+    token: asString_(body.token),
+    role: "teacher"
+  };
+}
+
+function studyTeacherCheck_(body) {
+  var pin = PropertiesService.getScriptProperties().getProperty("STUDY_TEACHER_PIN");
+  if (!pin) return { ok: false, error: "forbidden", message: "Teacher PIN is not set on the server." };
+  var cache = CacheService.getScriptCache(), key = "study_teacher_fail", n = Number(cache.get(key) || 0);
+  if (n >= 10) return { ok: false, error: "locked", message: "Too many tries. Wait 10 minutes." };
+  var given = String((body && body.pin) || "").trim().toLowerCase();
+  if (given && given === String(pin).trim().toLowerCase()) { cache.remove(key); return { ok: true, error: "", message: "" }; }
+  cache.put(key, String(n + 1), 600);
+  Utilities.sleep(Math.min(5000, 300 + n * 400));
+  return { ok: false, error: "forbidden", message: "Wrong PIN." };
 }
