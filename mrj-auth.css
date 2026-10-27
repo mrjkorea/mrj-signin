@@ -343,11 +343,49 @@ html.mrj-auth-locked body {
   border-radius: 0.35rem;
 }
 
-.mrj-auth-chip {
+.mrj-auth-chip-chrome {
   position: fixed;
   top: calc(0.55rem + env(safe-area-inset-top, 0px));
   right: calc(0.55rem + env(safe-area-inset-right, 0px));
   z-index: 2147482000;
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 0.35rem;
+  max-width: min(18rem, 92vw);
+}
+
+.mrj-auth-teacher-btn {
+  flex-shrink: 0;
+  min-height: 2.5rem;
+  padding: 0.4rem 0.7rem;
+  border: 2px solid #241c16;
+  border-radius: 999px;
+  background: #e2a122;
+  color: #241c16;
+  font-family: "Atkinson Hyperlegible", system-ui, sans-serif;
+  font-size: 0.88rem;
+  font-weight: 700;
+  line-height: 1.2;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(36, 28, 22, 0.12);
+}
+
+.mrj-auth-teacher-btn:focus-visible {
+  outline: 3px solid #1e5c45;
+  outline-offset: 2px;
+}
+
+.mrj-auth-teacher-btn-pill {
+  margin-right: 0.35rem;
+  vertical-align: middle;
+}
+
+.mrj-auth-chip {
+  position: relative;
+  top: auto;
+  right: auto;
+  z-index: auto;
   display: inline-flex;
   align-items: center;
   max-width: min(12rem, 42vw);

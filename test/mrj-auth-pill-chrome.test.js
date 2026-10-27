@@ -62,7 +62,7 @@ describe("student pill chrome", () => {
     auth.mount(root, { app: "mrj-zap-grammar-books" });
     await wait(3500);
     auth._test.applyStudentChrome();
-    const chip = body.children.find((c) => c.id === "mrj-auth-student-chip");
+    const chip = body.querySelector("#mrj-auth-student-chip");
     assert.equal(chip.hidden, true);
     pill.hidden = true;
     auth._test.applyStudentChrome();

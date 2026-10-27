@@ -7,7 +7,7 @@
 (function (global) {
   "use strict";
 
-  var AUTH_VERSION = "20261022-block-id-1.6.0";
+  var AUTH_VERSION = "20261027-teacher-unlock-1.6.1";
   var ENDPOINT = "https://script.google.com/macros/s/AKfycbwtJTUO3gbcMrlAwsn1feWxyp7Rw2cxpfe1bOT9v2rxmQHa2Tlc6pFNWAjU6ZAdlD6kFQ/exec";
   var SESSION_KEY = "mrj.auth.session";
   var NOTE_OUTBOX_PREFIX = "mrj.auth.noteOutbox.";
@@ -163,6 +163,12 @@
   var noteSuccessAt_ = {};
   var noteOutboxFlushChain = null;
   var chipEl = null;
+  var chipChromeEl = null;
+  var teacherBtnEl = null;
+  var teacherBtnOnPill = false;
+  var teacherUnlockOpen = false;
+  var teacherUnlockKeyHandler = null;
+  var teacherUnlockBusy = false;
   var panelRootEl = null;
   var panelBodyEl = null;
   var panelFetchGen = 0;
@@ -796,6 +802,194 @@
     return isTeacher() ? { role: "teacher" } : null;
   }
 
+  function clearTeacherMode_() {
+    if (!isTeacher()) return;
+    applyServerRole_("");
+    updateStudentChip_();
+  }
+
+  function ensureTeacherButton_() {
+    if (!global.document || !global.document.body) return;
+    if (teacherBtnEl) return;
+    teacherBtnEl = button_("Teacher", "mrj-auth-teacher-btn");
+    teacherBtnEl.type = "button";
+    teacherBtnEl.setAttribute("aria-label", "Teacher mode");
+    teacherBtnEl.addEventListener("click", function (ev) {
+      try {
+        if (ev && ev.stopPropagation) ev.stopPropagation();
+        if (isTeacher()) clearTeacherMode_();
+        else openTeacherUnlockDialog_();
+      } catch (ignore) {}
+    });
+  }
+
+  function syncTeacherButton_() {
+    ensureTeacherButton_();
+    if (!teacherBtnEl) return;
+    if (!state.id) {
+      teacherBtnEl.hidden = true;
+      return;
+    }
+    teacherBtnEl.hidden = false;
+    if (isTeacher()) {
+      teacherBtnEl.textContent = "Exit";
+      teacherBtnEl.setAttribute("aria-label", "Exit teacher mode");
+    } else {
+      teacherBtnEl.textContent = "Teacher";
+      teacherBtnEl.setAttribute("aria-label", "Teacher mode");
+    }
+  }
+
+  function attachTeacherButtonToChipChrome_() {
+    ensureChipDom_();
+    ensureTeacherButton_();
+    if (!chipChromeEl || !teacherBtnEl || !chipEl) return;
+    teacherBtnOnPill = false;
+    if (teacherBtnEl.parentNode !== chipChromeEl) {
+      if (teacherBtnEl.parentNode) teacherBtnEl.parentNode.removeChild(teacherBtnEl);
+      chipChromeEl.insertBefore(teacherBtnEl, chipEl);
+    }
+  }
+
+  function attachTeacherButtonNearPill_(pill) {
+    ensureTeacherButton_();
+    if (!pill || !pill.parentNode || !teacherBtnEl) return;
+    teacherBtnOnPill = true;
+    if (teacherBtnEl.parentNode !== pill.parentNode || teacherBtnEl.nextSibling !== pill) {
+      if (teacherBtnEl.parentNode) teacherBtnEl.parentNode.removeChild(teacherBtnEl);
+      pill.parentNode.insertBefore(teacherBtnEl, pill);
+    }
+  }
+
+  function closeTeacherUnlockDialog_() {
+    try {
+      teacherUnlockOpen = false;
+      teacherUnlockBusy = false;
+      if (teacherUnlockKeyHandler && global.removeEventListener) {
+        global.removeEventListener("keydown", teacherUnlockKeyHandler);
+        teacherUnlockKeyHandler = null;
+      }
+      if (panelRootEl) {
+        panelRootEl.hidden = true;
+        panelRootEl.setAttribute("aria-hidden", "true");
+        clear_(panelRootEl);
+      }
+    } catch (ignore) {}
+  }
+
+  function showTeacherUnlockError_(body, message) {
+    if (!body) return;
+    var old = body.querySelector && body.querySelector(".mrj-auth-teacher-unlock-error");
+    if (old && old.parentNode) old.parentNode.removeChild(old);
+    var err = el_("p", "mrj-auth-error mrj-auth-teacher-unlock-error");
+    err.textContent = message || "Wrong password. Try again.";
+    body.insertBefore(err, body.firstChild);
+  }
+
+  function openTeacherUnlockDialog_() {
+    try {
+      if (!state.id || !state.token) return;
+      if (teacherUnlockOpen) return;
+      if (panelOpen) closeProgressPanel();
+      ensureChipDom_();
+      teacherUnlockOpen = true;
+      panelRootEl.hidden = false;
+      panelRootEl.setAttribute("aria-hidden", "false");
+      clear_(panelRootEl);
+      var backdrop = el_("button", "mrj-auth-panel-backdrop");
+      backdrop.type = "button";
+      backdrop.setAttribute("aria-label", "Close teacher password");
+      backdrop.addEventListener("click", function () {
+        closeTeacherUnlockDialog_();
+      });
+      var dialog = el_("div", "mrj-auth-panel mrj-auth-teacher-unlock");
+      dialog.setAttribute("role", "dialog");
+      dialog.setAttribute("aria-modal", "true");
+      dialog.setAttribute("aria-label", "Teacher password");
+      var header = el_("div", "mrj-auth-panel-header");
+      var title = el_("h2", "mrj-auth-panel-title");
+      title.textContent = "Teacher mode";
+      var closeBtn = button_("×", "mrj-auth-panel-close");
+      closeBtn.setAttribute("aria-label", "Close");
+      closeBtn.addEventListener("click", function () {
+        closeTeacherUnlockDialog_();
+      });
+      header.appendChild(title);
+      header.appendChild(closeBtn);
+      var body = el_("div", "mrj-auth-panel-body");
+      var intro = el_("p", "mrj-auth-panel-cap");
+      intro.textContent =
+        "Enter the teacher password to unlock this app while signed in as " + state.id + ".";
+      body.appendChild(intro);
+      var form = el_("form", "mrj-auth-form");
+      form.setAttribute("novalidate", "novalidate");
+      var wrap = el_("label", "mrj-auth-field");
+      var name = el_("span", "mrj-auth-label");
+      name.textContent = "Teacher password";
+      var input = el_("input", "mrj-auth-input");
+      input.type = "password";
+      input.autocomplete = "current-password";
+      input.inputMode = "text";
+      input.setAttribute("aria-label", "Teacher password");
+      wrap.appendChild(name);
+      wrap.appendChild(input);
+      form.appendChild(wrap);
+      var actions = el_("div", "mrj-auth-actions");
+      var submit = button_("Unlock", "mrj-auth-submit");
+      submit.type = "submit";
+      var back = button_("Cancel", "mrj-auth-back");
+      back.type = "button";
+      back.addEventListener("click", function () {
+        closeTeacherUnlockDialog_();
+      });
+      actions.appendChild(submit);
+      actions.appendChild(back);
+      form.appendChild(actions);
+      form.addEventListener("submit", function (event) {
+        event.preventDefault();
+        if (teacherUnlockBusy) return;
+        var secret = input.value;
+        teacherUnlockBusy = true;
+        submit.disabled = true;
+        post_({
+          action: "teacher_unlock",
+          id: state.id,
+          token: state.token,
+          teacher_secret: secret
+        }).then(function (data) {
+          teacherUnlockBusy = false;
+          submit.disabled = false;
+          if (data && data.ok && data.role === "teacher") {
+            applyServerRole_("teacher");
+            saveSession_();
+            updateStudentChip_();
+            closeTeacherUnlockDialog_();
+            return;
+          }
+          showTeacherUnlockError_(body, (data && data.message) || "Wrong password. Try again.");
+        }).catch(function () {
+          teacherUnlockBusy = false;
+          submit.disabled = false;
+          showTeacherUnlockError_(body, "Could not reach the server. Try again.");
+        });
+      });
+      body.appendChild(form);
+      dialog.appendChild(header);
+      dialog.appendChild(body);
+      panelRootEl.appendChild(backdrop);
+      panelRootEl.appendChild(dialog);
+      if (teacherUnlockKeyHandler && global.removeEventListener) {
+        global.removeEventListener("keydown", teacherUnlockKeyHandler);
+      }
+      teacherUnlockKeyHandler = function (ev) {
+        if (!teacherUnlockOpen) return;
+        if (ev && (ev.key === "Escape" || ev.key === "Esc")) closeTeacherUnlockDialog_();
+      };
+      if (global.addEventListener) global.addEventListener("keydown", teacherUnlockKeyHandler);
+      if (input.focus) input.focus();
+    } catch (ignore) {}
+  }
+
   function signOut(notice) {
     viewGen += 1;
     sessionGen += 1;
@@ -807,6 +1001,7 @@
     teacherChromeApplied_ = false;
     clearSession_();
     closeProgressPanel();
+    closeTeacherUnlockDialog_();
     disconnectChipObserver_();
     syncTeacherChrome_(true);
     updateStudentChip_();
@@ -1599,12 +1794,22 @@
 
   function isInsideAuthChrome_(node) {
     if (!node || node.nodeType !== 1) return false;
+    if (chipChromeEl && (node === chipChromeEl || (chipChromeEl.contains && chipChromeEl.contains(node)))) {
+      return true;
+    }
     if (chipEl && (node === chipEl || (chipEl.contains && chipEl.contains(node)))) return true;
+    if (teacherBtnEl && (node === teacherBtnEl || (teacherBtnEl.contains && teacherBtnEl.contains(node)))) {
+      return true;
+    }
     if (panelRootEl && (node === panelRootEl || (panelRootEl.contains && panelRootEl.contains(node)))) {
       return true;
     }
     if (node.closest) {
-      if (node.closest("#mrj-auth-gate, .mrj-auth, #mrj-auth-student-chip, .mrj-auth-panel-root")) {
+      if (
+        node.closest(
+          "#mrj-auth-gate, .mrj-auth, #mrj-auth-chip-chrome, #mrj-auth-student-chip, .mrj-auth-teacher-btn, .mrj-auth-panel-root"
+        )
+      ) {
         return true;
       }
     }
@@ -1733,8 +1938,15 @@
 
   function isChipObstacle_(node) {
     if (!node || node.nodeType !== 1) return false;
-    if (node === chipEl || node === panelRootEl) return false;
-    if (node.closest && node.closest("#mrj-auth-student-chip, .mrj-auth-panel-root, #mrj-auth-gate, .mrj-auth")) {
+    if (node === chipEl || node === chipChromeEl || node === teacherBtnEl || node === panelRootEl) {
+      return false;
+    }
+    if (
+      node.closest &&
+      node.closest(
+        "#mrj-auth-chip-chrome, #mrj-auth-student-chip, .mrj-auth-teacher-btn, .mrj-auth-panel-root, #mrj-auth-gate, .mrj-auth"
+      )
+    ) {
       return false;
     }
     try {
@@ -1785,9 +1997,16 @@
 
   function isChipMarginValidationTarget_(node) {
     if (!node || node.nodeType !== 1) return false;
-    if (node === chipEl || node === panelRootEl) return false;
+    if (node === chipEl || node === chipChromeEl || node === teacherBtnEl || node === panelRootEl) {
+      return false;
+    }
     if (isCanvasRelatedNode_(node)) return false;
-    if (node.closest && node.closest("#mrj-auth-student-chip, .mrj-auth-panel-root, #mrj-auth-gate, .mrj-auth")) {
+    if (
+      node.closest &&
+      node.closest(
+        "#mrj-auth-chip-chrome, #mrj-auth-student-chip, .mrj-auth-teacher-btn, .mrj-auth-panel-root, #mrj-auth-gate, .mrj-auth"
+      )
+    ) {
       return false;
     }
     try {
@@ -1955,8 +2174,15 @@
     if (!compact) return false;
     if (!node || node.nodeType !== 1) return false;
     if (isChipObstacle_(node)) return false;
-    if (node === chipEl || node === panelRootEl) return false;
-    if (node.closest && node.closest("#mrj-auth-student-chip, .mrj-auth-panel-root, #mrj-auth-gate, .mrj-auth")) {
+    if (node === chipEl || node === chipChromeEl || node === teacherBtnEl || node === panelRootEl) {
+      return false;
+    }
+    if (
+      node.closest &&
+      node.closest(
+        "#mrj-auth-chip-chrome, #mrj-auth-student-chip, .mrj-auth-teacher-btn, .mrj-auth-panel-root, #mrj-auth-gate, .mrj-auth"
+      )
+    ) {
       return false;
     }
     try {
@@ -2029,8 +2255,13 @@
 
   function isOutOfFlowForChipPad_(node) {
     if (!node || node.nodeType !== 1) return true;
-    if (node === chipEl) return true;
-    if (node.closest && node.closest("#mrj-auth-student-chip, .mrj-auth-panel-root, #mrj-auth-gate, .mrj-auth")) {
+    if (node === chipEl || node === chipChromeEl || node === teacherBtnEl) return true;
+    if (
+      node.closest &&
+      node.closest(
+        "#mrj-auth-chip-chrome, #mrj-auth-student-chip, .mrj-auth-teacher-btn, .mrj-auth-panel-root, #mrj-auth-gate, .mrj-auth"
+      )
+    ) {
       return true;
     }
     var cur = node;
@@ -2181,9 +2412,15 @@
     return minPad;
   }
 
+  function chipLayoutHost_() {
+    return chipChromeEl || chipEl;
+  }
+
   function chipLayoutRectWithMargin_(extraTopPx) {
-    var r = chipEl.getBoundingClientRect();
-    var appliedMt = parseChipMarginTopPx_(chipEl.style.marginTop);
+    var host = chipLayoutHost_();
+    if (!host) return { left: 0, right: 0, top: 0, bottom: 0, width: 0, height: 0 };
+    var r = host.getBoundingClientRect();
+    var appliedMt = parseChipMarginTopPx_(host.style.marginTop);
     var top = r.top - appliedMt + (extraTopPx || 0);
     return {
       left: r.left,
@@ -2196,9 +2433,10 @@
   }
 
   function chipWriteStyle_(prop, value) {
-    if (!chipEl || !chipEl.style) return;
-    if (chipEl.style[prop] !== value) {
-      chipEl.style[prop] = value;
+    var host = chipLayoutHost_();
+    if (!host || !host.style) return;
+    if (host.style[prop] !== value) {
+      host.style[prop] = value;
       chipDomWriteCount += 1;
     }
   }
@@ -2447,6 +2685,8 @@
       if (pill.style.cursor !== "pointer") pill.style.cursor = "pointer";
     } catch (ignore) {}
     syncPillLabel_(pill);
+    attachTeacherButtonNearPill_(pill);
+    syncTeacherButton_();
     pill.addEventListener("click", function () {
       try {
         openProgressPanel();
@@ -2465,6 +2705,11 @@
 
   function ensureChipDom_() {
     if (!global.document || !global.document.body) return;
+    if (!chipChromeEl) {
+      chipChromeEl = el_("div", "mrj-auth-chip-chrome");
+      chipChromeEl.id = "mrj-auth-chip-chrome";
+      global.document.body.appendChild(chipChromeEl);
+    }
     if (!chipEl) {
       chipEl = el_("button", "mrj-auth-chip");
       chipEl.type = "button";
@@ -2475,7 +2720,8 @@
           openProgressPanel();
         } catch (ignore) {}
       });
-      global.document.body.appendChild(chipEl);
+      chipChromeEl.appendChild(chipEl);
+      attachTeacherButtonToChipChrome_();
       if (global.addEventListener) {
         global.addEventListener("resize", function () { scheduleStudentChrome_(); });
         global.addEventListener("orientationchange", function () { scheduleStudentChrome_(); });
@@ -2492,8 +2738,10 @@
 
   function setChipHidden_(hidden) {
     if (!chipEl) return;
-    if (!!chipEl.hidden === !!hidden) return;
+    var chromeHidden = teacherBtnOnPill ? true : hidden;
+    if (!!chipEl.hidden === !!hidden && (!chipChromeEl || chipChromeEl.hidden === chromeHidden)) return;
     chipEl.hidden = hidden;
+    if (chipChromeEl && !teacherBtnOnPill) chipChromeEl.hidden = hidden;
   }
 
   function applyStudentChrome_() {
@@ -2503,6 +2751,7 @@
       if (!state.id) {
         setChipHidden_(true);
         applyChipBodySlot_(0);
+        if (teacherBtnEl) teacherBtnEl.hidden = true;
         return;
       }
       installChipObserver_();
@@ -2517,6 +2766,8 @@
           setChipHidden_(true);
           applyChipBodySlot_(0);
           wireNamePill_(pill);
+          attachTeacherButtonNearPill_(pill);
+          syncTeacherButton_();
           return;
         }
       }
@@ -2526,6 +2777,8 @@
         return;
       }
       setChipHidden_(false);
+      attachTeacherButtonToChipChrome_();
+      syncTeacherButton_();
       installChipIdleMutationWatcher_();
     } catch (ignore) {}
   }
