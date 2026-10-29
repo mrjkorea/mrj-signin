@@ -10,7 +10,7 @@
   var AUTH_VERSION = "20261030-worker-first-packs-1.6.5";
   var ENDPOINT = "https://script.google.com/macros/s/AKfycbwtJTUO3gbcMrlAwsn1feWxyp7Rw2cxpfe1bOT9v2rxmQHa2Tlc6pFNWAjU6ZAdlD6kFQ/exec";
   var PROGRESS_WORKER_URL = "https://mrj-progress-packs.canadianvegetarian.workers.dev";
-  var PROGRESS_WORKER_KEY = "REPLACE_STAGING_KEY";
+  var PROGRESS_WORKER_KEY = "fe492cacc6396c4afa89768a3678da0d23faaab42741b5a6d4d193e7842ed0cc";
   var PROGRESS_WORKER_TIMEOUT_MS = 4000;
   var SESSION_KEY = "mrj.auth.session";
   var NOTE_OUTBOX_PREFIX = "mrj.auth.noteOutbox.";
