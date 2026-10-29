@@ -7,8 +7,11 @@
 (function (global) {
   "use strict";
 
-  var AUTH_VERSION = "20261029-study-pin-unlock-1.6.4";
+  var AUTH_VERSION = "20261030-worker-first-packs-1.6.5";
   var ENDPOINT = "https://script.google.com/macros/s/AKfycbwtJTUO3gbcMrlAwsn1feWxyp7Rw2cxpfe1bOT9v2rxmQHa2Tlc6pFNWAjU6ZAdlD6kFQ/exec";
+  var PROGRESS_WORKER_URL = "https://mrj-progress-packs.canadianvegetarian.workers.dev";
+  var PROGRESS_WORKER_KEY = "REPLACE_STAGING_KEY";
+  var PROGRESS_WORKER_TIMEOUT_MS = 4000;
   var SESSION_KEY = "mrj.auth.session";
   var NOTE_OUTBOX_PREFIX = "mrj.auth.noteOutbox.";
   var NOTE_OUTBOX_MAX = 300;
@@ -250,6 +253,41 @@
       return res.text();
     }).then(function (text) {
       return parseJsonResponse_(text);
+    });
+    return Promise.race([req, timedOut]);
+  }
+
+  function workerPostJson_(path, body) {
+    var url = PROGRESS_WORKER_URL + path;
+    var opts = {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-MRJ-Progress-Key": PROGRESS_WORKER_KEY
+      },
+      body: JSON.stringify(body)
+    };
+    var ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+    if (ctrl) opts.signal = ctrl.signal;
+    var timedOut = new Promise(function (_, reject) {
+      setTimeout(function () {
+        if (ctrl) ctrl.abort();
+        var err = new Error("timeout");
+        err.kind = "timeout";
+        reject(err);
+      }, PROGRESS_WORKER_TIMEOUT_MS);
+    });
+    var req = fetch(url, opts).then(function (res) {
+      return res.text().then(function (text) {
+        var data = null;
+        var trimmed = String(text == null ? "" : text).trim();
+        if (trimmed && (trimmed.charAt(0) === "{" || trimmed.charAt(0) === "[")) {
+          try {
+            data = JSON.parse(trimmed);
+          } catch (ignoreParse) {}
+        }
+        return { httpOk: res.ok, status: res.status, data: data };
+      });
     });
     return Promise.race([req, timedOut]);
   }
@@ -1579,6 +1617,45 @@
     return String(program || appProgram_() || "decodable").trim() || "decodable";
   }
 
+  function finishLoadPackFromData_(program, snap, data) {
+    if (!sessionMatches_(snap)) {
+      return { ok: false, error: "stale_session" };
+    }
+    if (!data || !data.ok) {
+      if (signOutIfBlocked_(data)) {
+        return { ok: false, error: "id_blocked", message: MESSAGES.id_blocked };
+      }
+      packState[program] = {
+        loaded: false,
+        json: "",
+        error: data && data.error ? data.error : "pack_load_failed"
+      };
+      return data || { ok: false, error: "pack_load_failed" };
+    }
+    var json = data.progress_json != null ? String(data.progress_json) : "";
+    packState[program] = { loaded: true, json: json, error: "" };
+    return { ok: true, found: !!data.found, progress_json: json };
+  }
+
+  function loadPackViaScript_(program, snap) {
+    return post_({
+      action: "load_pack",
+      id: snap.id,
+      token: snap.token,
+      program: program
+    })
+      .then(function (data) {
+        return finishLoadPackFromData_(program, snap, data);
+      })
+      .catch(function () {
+        if (!sessionMatches_(snap)) {
+          return { ok: false, error: "stale_session" };
+        }
+        packState[program] = { loaded: false, json: "", error: "network" };
+        return { ok: false, error: "network" };
+      });
+  }
+
   function loadPack(program) {
     program = packKey_(program);
     if (!state.id || !state.token) {
@@ -1586,36 +1663,79 @@
     }
     var snap = captureSession_();
     packState[program] = { loaded: false, json: "", error: "loading" };
-    return post_({
-      action: "load_pack",
+    return workerPostJson_("/load_pack", { student_id: snap.id, program: program })
+      .then(function (res) {
+        if (res && res.status === 401) {
+          if (!sessionMatches_(snap)) {
+            return { ok: false, error: "stale_session" };
+          }
+          packState[program] = { loaded: false, json: "", error: "unauthorized" };
+          return { ok: false, error: "unauthorized" };
+        }
+        if (res && res.httpOk && res.data && res.data.ok === true) {
+          if (!sessionMatches_(snap)) {
+            return { ok: false, error: "stale_session" };
+          }
+          var json =
+            res.data.progress_json != null ? String(res.data.progress_json) : "";
+          packState[program] = { loaded: true, json: json, error: "" };
+          return { ok: true, found: !!res.data.found, progress_json: json };
+        }
+        return loadPackViaScript_(program, snap);
+      })
+      .catch(function () {
+        return loadPackViaScript_(program, snap);
+      });
+  }
+
+  function buildSavePackBody_(program, progressStr, snap) {
+    var saveBody = {
+      action: "save_pack",
       id: snap.id,
       token: snap.token,
-      program: program
-    }).then(function (data) {
-      if (!sessionMatches_(snap)) {
-        return { ok: false, error: "stale_session" };
-      }
-      if (!data || !data.ok) {
+      program: program,
+      progress_json: progressStr
+    };
+    var saveMeta = teacherSaveMetadata_();
+    if (saveMeta) saveBody.metadata_json = saveMeta;
+    return saveBody;
+  }
+
+  function shadowSavePackViaScript_(program, progressStr, snap) {
+    post_(buildSavePackBody_(program, progressStr, snap)).catch(function () {});
+  }
+
+  function savePackViaScript_(program, progressStr, snap, ps) {
+    return post_(buildSavePackBody_(program, progressStr, snap))
+      .then(function (data) {
+        if (!sessionMatches_(snap)) {
+          return { ok: false, error: "stale_session" };
+        }
+        if (data && data.ok) {
+          packState[program] = {
+            loaded: true,
+            json: progressStr,
+            error: ""
+          };
+        } else if (ps) {
+          ps.loaded = false;
+          ps.error = data && data.error ? data.error : "save_failed";
+        }
         if (signOutIfBlocked_(data)) {
           return { ok: false, error: "id_blocked", message: MESSAGES.id_blocked };
         }
-        packState[program] = {
-          loaded: false,
-          json: "",
-          error: data && data.error ? data.error : "pack_load_failed"
-        };
-        return data || { ok: false, error: "pack_load_failed" };
-      }
-      var json = data.progress_json != null ? String(data.progress_json) : "";
-      packState[program] = { loaded: true, json: json, error: "" };
-      return { ok: true, found: !!data.found, progress_json: json };
-    }).catch(function () {
-      if (!sessionMatches_(snap)) {
-        return { ok: false, error: "stale_session" };
-      }
-      packState[program] = { loaded: false, json: "", error: "network" };
-      return { ok: false, error: "network" };
-    });
+        return data || { ok: false, error: "save_failed" };
+      })
+      .catch(function () {
+        if (!sessionMatches_(snap)) {
+          return { ok: false, error: "stale_session" };
+        }
+        if (packState[program]) {
+          packState[program].loaded = false;
+          packState[program].error = "network";
+        }
+        return { ok: false, error: "network" };
+      });
   }
 
   function savePack(program, progressJson) {
@@ -1628,43 +1748,30 @@
       return Promise.resolve({ ok: false, error: "pack_not_loaded" });
     }
     var snap = captureSession_();
-    var saveBody = {
-      action: "save_pack",
-      id: snap.id,
-      token: snap.token,
+    var progressStr = progressJson == null ? "{}" : String(progressJson);
+    return workerPostJson_("/save_pack", {
+      student_id: snap.id,
       program: program,
-      progress_json: progressJson == null ? "{}" : String(progressJson)
-    };
-    var saveMeta = teacherSaveMetadata_();
-    if (saveMeta) saveBody.metadata_json = saveMeta;
-    return post_(saveBody).then(function (data) {
-      if (!sessionMatches_(snap)) {
-        return { ok: false, error: "stale_session" };
-      }
-      if (data && data.ok) {
-        packState[program] = {
-          loaded: true,
-          json: String(progressJson == null ? "{}" : progressJson),
-          error: ""
-        };
-      } else if (ps) {
-        ps.loaded = false;
-        ps.error = data && data.error ? data.error : "save_failed";
-      }
-      if (signOutIfBlocked_(data)) {
-        return { ok: false, error: "id_blocked", message: MESSAGES.id_blocked };
-      }
-      return data || { ok: false, error: "save_failed" };
-    }).catch(function () {
-      if (!sessionMatches_(snap)) {
-        return { ok: false, error: "stale_session" };
-      }
-      if (packState[program]) {
-        packState[program].loaded = false;
-        packState[program].error = "network";
-      }
-      return { ok: false, error: "network" };
-    });
+      progress_json: progressStr
+    })
+      .then(function (res) {
+        if (res && res.httpOk && res.data && res.data.ok === true) {
+          if (!sessionMatches_(snap)) {
+            return { ok: false, error: "stale_session" };
+          }
+          packState[program] = {
+            loaded: true,
+            json: progressStr,
+            error: ""
+          };
+          shadowSavePackViaScript_(program, progressStr, snap);
+          return { ok: true, saved: !!res.data.saved };
+        }
+        return savePackViaScript_(program, progressStr, snap, ps);
+      })
+      .catch(function () {
+        return savePackViaScript_(program, progressStr, snap, ps);
+      });
   }
 
   function packReady(program) {
