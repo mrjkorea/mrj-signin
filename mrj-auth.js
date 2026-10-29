@@ -7,7 +7,7 @@
 (function (global) {
   "use strict";
 
-  var AUTH_VERSION = "20261027-teacher-unlock-1.6.1";
+  var AUTH_VERSION = "20261029-study-pin-unlock-1.6.4";
   var ENDPOINT = "https://script.google.com/macros/s/AKfycbwtJTUO3gbcMrlAwsn1feWxyp7Rw2cxpfe1bOT9v2rxmQHa2Tlc6pFNWAjU6ZAdlD6kFQ/exec";
   var SESSION_KEY = "mrj.auth.session";
   var NOTE_OUTBOX_PREFIX = "mrj.auth.noteOutbox.";
@@ -952,21 +952,19 @@
         teacherUnlockBusy = true;
         submit.disabled = true;
         post_({
-          action: "teacher_unlock",
-          id: state.id,
-          token: state.token,
-          teacher_secret: secret
+          action: "study_teacher_check",
+          pin: secret
         }).then(function (data) {
           teacherUnlockBusy = false;
           submit.disabled = false;
-          if (data && data.ok && data.role === "teacher") {
+          if (data && data.ok) {
             applyServerRole_("teacher");
             saveSession_();
             updateStudentChip_();
             closeTeacherUnlockDialog_();
             return;
           }
-          showTeacherUnlockError_(body, (data && data.message) || "Wrong password. Try again.");
+          showTeacherUnlockError_(body, (data && data.message) || "Wrong PIN. Try again.");
         }).catch(function () {
           teacherUnlockBusy = false;
           submit.disabled = false;

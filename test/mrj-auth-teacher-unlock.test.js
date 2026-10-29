@@ -27,16 +27,11 @@ describe("mrj-auth teacher PIN unlock", () => {
           hasMore: false
         });
       }
-      if (b.action === "teacher_unlock") {
-        if (b.teacher_secret !== "class-pin") {
-          return jsonResponse({ ok: false, error: "forbidden", message: "Teachers only." });
+      if (b.action === "study_teacher_check") {
+        if (String(b.pin).toLowerCase() !== "class-pin") {
+          return jsonResponse({ ok: false, error: "forbidden", message: "Wrong PIN." });
         }
-        return jsonResponse({
-          ok: true,
-          id: b.id,
-          token: b.token,
-          role: "teacher"
-        });
+        return jsonResponse({ ok: true, error: "", message: "" });
       }
       return jsonResponse({ ok: false, error: "bad_action" });
     };

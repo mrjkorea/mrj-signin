@@ -6,7 +6,7 @@
  * Passwords are stored for an exact match and are never returned or logged.
  */
 var SPREADSHEET_ID = "1bpgekxlektvwpsef1PmIkxPiDuHrkVXFaAy-OmwqL5c";
-var APP_VERSION = "1.6.2";
+var APP_VERSION = "1.6.4";
 var SIGNIN_TEACHER_ROLE_KEYS = ["andrew"];
 var ACCOUNTS_SHEET = "StudentAccounts";
 var SCORE_SHEET = "StudentScoreIndex";
@@ -2355,30 +2355,64 @@ function nameFromSession_(sessionId) {
   return name;
 }
 
-/** Study World "Teacher" link: checks a PIN kept only in Script Properties. Rate-limited like teacher_secret. */
-function teacherUnlock_(body) {
-  var tokenGate = requireToken_(book_(), body, true);
-  if (!tokenGate.ok) return tokenGate;
-  var access = requireTeacherAccess_(body);
-  if (!access.ok) return access;
-  return {
-    ok: true,
-    error: "",
-    message: "",
-    id: tokenGate.id,
-    token: asString_(body.token),
-    role: "teacher"
-  };
-}
-
-function studyTeacherCheck_(body) {
+function studyTeacherPinVerify_(givenRaw) {
   var pin = PropertiesService.getScriptProperties().getProperty("STUDY_TEACHER_PIN");
-  if (!pin) return { ok: false, error: "forbidden", message: "Teacher PIN is not set on the server." };
-  var cache = CacheService.getScriptCache(), key = "study_teacher_fail", n = Number(cache.get(key) || 0);
-  if (n >= 10) return { ok: false, error: "locked", message: "Too many tries. Wait 10 minutes." };
-  var given = String((body && body.pin) || "").trim().toLowerCase();
-  if (given && given === String(pin).trim().toLowerCase()) { cache.remove(key); return { ok: true, error: "", message: "" }; }
+  if (!pin) {
+    return { ok: false, error: "forbidden", message: "Teacher PIN is not set on the server." };
+  }
+  var cache = CacheService.getScriptCache();
+  var key = "study_teacher_fail";
+  var n = Number(cache.get(key) || 0);
+  if (n >= 10) {
+    return { ok: false, error: "locked", message: "Too many tries. Wait 10 minutes." };
+  }
+  var given = String(givenRaw == null ? "" : givenRaw).trim().toLowerCase();
+  if (given && given === String(pin).trim().toLowerCase()) {
+    cache.remove(key);
+    return { ok: true, error: "", message: "" };
+  }
   cache.put(key, String(n + 1), 600);
   Utilities.sleep(Math.min(5000, 300 + n * 400));
   return { ok: false, error: "forbidden", message: "Wrong PIN." };
+}
+
+/** Study World "Teacher" link: checks a PIN kept only in Script Properties. Rate-limited like teacher_secret. */
+function teacherUnlock_(body) {
+  body = body || {};
+  var tokenGate = requireToken_(book_(), body, true);
+  if (!tokenGate.ok) return tokenGate;
+  var access = requireTeacherAccess_(body);
+  if (access.ok) {
+    return {
+      ok: true,
+      error: "",
+      message: "",
+      id: tokenGate.id,
+      token: asString_(body.token),
+      role: "teacher"
+    };
+  }
+  var studyPin = PropertiesService.getScriptProperties().getProperty("STUDY_TEACHER_PIN");
+  if (studyPin) {
+    var pinGate = studyTeacherPinVerify_(body.teacher_secret);
+    if (pinGate.ok) {
+      return {
+        ok: true,
+        error: "",
+        message: "",
+        id: tokenGate.id,
+        token: asString_(body.token),
+        role: "teacher"
+      };
+    }
+    if (pinGate.error === "locked") return pinGate;
+    var attempted =
+      body.teacher_secret != null && String(body.teacher_secret).trim() !== "";
+    if (attempted) return pinGate;
+  }
+  return access;
+}
+
+function studyTeacherCheck_(body) {
+  return studyTeacherPinVerify_(body && body.pin);
 }

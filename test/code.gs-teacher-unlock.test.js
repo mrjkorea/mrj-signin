@@ -60,4 +60,26 @@ describe("teacher_unlock action", () => {
     });
     assert.equal(res.ok, false);
   });
+
+  it("accepts STUDY_TEACHER_PIN via teacher_secret (case-insensitive)", () => {
+    const ctx = createGasContext();
+    ctx.PropertiesService.getScriptProperties().setProperty("STUDY_TEACHER_PIN", "study-pin");
+    seedKid(ctx);
+
+    const bad = ctx.teacherUnlock_({
+      id: "kid",
+      token: "tok-kid",
+      teacher_secret: "nope"
+    });
+    assert.equal(bad.ok, false);
+    assert.equal(bad.message, "Wrong PIN.");
+
+    const ok = ctx.teacherUnlock_({
+      id: "kid",
+      token: "tok-kid",
+      teacher_secret: "STUDY-PIN"
+    });
+    assert.equal(ok.ok, true);
+    assert.equal(ok.role, "teacher");
+  });
 });
