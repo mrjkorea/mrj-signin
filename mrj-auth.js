@@ -7,7 +7,7 @@
 (function (global) {
   "use strict";
 
-  var AUTH_VERSION = "20261030-worker-first-packs-1.6.5";
+  var AUTH_VERSION = "20261030-worker-first-packs-1.6.6";
   var ENDPOINT = "https://script.google.com/macros/s/AKfycbwtJTUO3gbcMrlAwsn1feWxyp7Rw2cxpfe1bOT9v2rxmQHa2Tlc6pFNWAjU6ZAdlD6kFQ/exec";
   var PROGRESS_WORKER_URL = "https://mrj-progress-packs.canadianvegetarian.workers.dev";
   var PROGRESS_WORKER_KEY = "fe492cacc6396c4afa89768a3678da0d23faaab42741b5a6d4d193e7842ed0cc";
@@ -745,57 +745,61 @@
 
   function resumeSession_(saved) {
     var gen = viewGen;
-    renderStatus_(MESSAGES.checking, { resume: true });
+    finish_(saved.id, saved.token, [], "");
     fetchAllProgress_(saved.id, saved.token, appProgram_(), {
       onRetry: function () {
         if (gen !== viewGen) return;
-        renderStatus_(MESSAGES.server_busy, { resume: true });
+        showResumeBusyNote_();
       }
     }).then(function (result) {
       if (gen !== viewGen) return;
-      if (result && result.ok) {
-        finish_(result.id || saved.id, result.token || saved.token, result.progress, "", result.role);
-        return;
-      }
+      if (!state.id || rules.idKey(state.id) !== rules.idKey(saved.id)) return;
       if (signOutIfBlocked_(result)) return;
       if (sessionRejected_(result)) {
         clearSession_();
         renderDoors_();
         return;
       }
-      optimisticResume_(saved, gen);
+      if (mergeProgressResult_(result, saved.id, saved.token, "")) return;
+      resumeProgressSoftFail_(saved, gen);
     }).catch(function () {
       if (gen !== viewGen) return;
-      optimisticResume_(saved, gen);
+      if (!state.id || rules.idKey(state.id) !== rules.idKey(saved.id)) return;
+      resumeProgressSoftFail_(saved, gen);
     });
   }
 
-  function optimisticResume_(saved, gen) {
-    finish_(saved.id, saved.token, [], "resume_pending");
-    if (rootEl) {
-      var note = el_("p", "mrj-auth-status");
-      note.textContent = MESSAGES.resume_busy;
-      rootEl.insertBefore(note, rootEl.firstChild);
-    }
-    fetchAllProgress_(saved.id, saved.token, appProgram_()).then(function (result) {
-      if (gen !== viewGen) return;
-      if (!state.id || rules.idKey(state.id) !== rules.idKey(saved.id)) return;
-      if (signOutIfBlocked_(result)) return;
-      if (sessionRejected_(result)) {
-        signOut();
-        return;
-      }
-      if (!result || !result.ok) return;
-      state.id = result.id || saved.id;
-      state.token = result.token || saved.token;
-      state.progress = result.progress;
-      state.progressError = "";
+  function showResumeBusyNote_() {
+    if (!rootEl) return;
+    if (rootEl.querySelector && rootEl.querySelector(".mrj-auth-resume-busy")) return;
+    var note = el_("p", "mrj-auth-status mrj-auth-resume-busy");
+    note.textContent = MESSAGES.resume_busy;
+    rootEl.insertBefore(note, rootEl.firstChild);
+  }
+
+  function resumeProgressSoftFail_(saved, gen) {
+    state.progressError = "resume_pending";
+    saveSession_();
+    showResumeBusyNote_();
+    retryProgressInBackground_(saved.id, saved.token, gen);
+  }
+
+  function mergeProgressResult_(result, fallbackId, fallbackToken, fallbackRole) {
+    if (!result || !result.ok) return false;
+    state.id = result.id || fallbackId;
+    state.token = result.token || fallbackToken;
+    state.progress = result.progress;
+    state.progressError = "";
+    if (result.role !== undefined && result.role !== "") {
       applyServerRole_(result.role);
-      saveSession_();
-      renderSignedIn_();
-      updateStudentChip_();
-      dispatchReady_();
-    }).catch(function () {});
+    } else if (fallbackRole !== undefined && fallbackRole !== "") {
+      applyServerRole_(fallbackRole);
+    }
+    saveSession_();
+    renderSignedIn_();
+    updateStudentChip_();
+    dispatchReady_();
+    return true;
   }
 
   function student() {
@@ -1519,51 +1523,59 @@
     });
   }
 
-  function retryProgressInBackground_(id, tokenValue) {
-    var gen = viewGen;
+  function retryProgressInBackground_(id, tokenValue, viewGenGuard) {
+    var gen = viewGenGuard == null ? viewGen : viewGenGuard;
     fetchAllProgress_(id, tokenValue, appProgram_()).then(function (result) {
       if (gen !== viewGen) return;
       if (!state.id || rules.idKey(state.id) !== rules.idKey(id)) return;
       if (signOutIfBlocked_(result)) return;
-      if (!result || !result.ok) return;
-      state.id = result.id || id;
-      state.token = result.token || tokenValue;
-      state.progress = result.progress;
-      state.progressError = "";
-      saveSession_();
-      renderSignedIn_();
-      dispatchReady_();
+      if (sessionRejected_(result)) {
+        signOut();
+        return;
+      }
+      mergeProgressResult_(result, id, tokenValue, "");
     }).catch(function () {});
   }
 
   function loadPlace_(id, tokenValue, loginRole) {
     var seq = ++loadPlaceSeq;
-    var loadGen = sessionGen;
     var loadId = id == null ? "" : String(id);
     var loadToken = tokenValue == null ? "" : String(tokenValue);
     renderStatus_(MESSAGES.loading_place);
+    finish_(loadId, loadToken, [], "", loginRole);
+    var loadGen = sessionGen;
     fetchAllProgress_(loadId, loadToken, appProgram_()).then(function (result) {
       if (seq !== loadPlaceSeq) return;
       if (loadGen !== sessionGen) return;
-      if (state.id && rules.idKey(state.id) !== rules.idKey(loadId)) return;
-      var role = (result && result.role) || loginRole;
-      if (result && result.ok) {
-        finish_(result.id || loadId, result.token || loadToken, result.progress, "", role);
-        return;
-      }
+      if (!state.id || rules.idKey(state.id) !== rules.idKey(loadId)) return;
       if (signOutIfBlocked_(result)) return;
       if (sessionRejected_(result)) {
+        clearSession_();
+        sessionGen += 1;
+        state.id = "";
+        state.token = "";
+        state.role = "";
+        state.progress = [];
+        state.progressError = "";
+        packState = {};
         renderLogin_("Sign in again.", [loadId, ""]);
         return;
       }
+      if (mergeProgressResult_(result, loadId, loadToken, loginRole)) return;
       var err = (result && result.error) ? result.error : "progress_load_failed";
-      finish_(loadId, loadToken, [], err, role);
+      state.progressError = err;
+      saveSession_();
+      renderSignedIn_();
+      dispatchReady_();
       retryProgressInBackground_(state.id, state.token);
     }).catch(function () {
       if (seq !== loadPlaceSeq) return;
       if (loadGen !== sessionGen) return;
-      if (state.id && rules.idKey(state.id) !== rules.idKey(loadId)) return;
-      finish_(loadId, loadToken, [], "network", loginRole);
+      if (!state.id || rules.idKey(state.id) !== rules.idKey(loadId)) return;
+      state.progressError = "network";
+      saveSession_();
+      renderSignedIn_();
+      dispatchReady_();
       retryProgressInBackground_(state.id, state.token);
     });
   }
