@@ -7,11 +7,14 @@
 (function (global) {
   "use strict";
 
-  var AUTH_VERSION = "20261030-worker-first-packs-1.6.6";
+  var AUTH_VERSION = "20261030-cf-login-1.7.0";
   var ENDPOINT = "https://script.google.com/macros/s/AKfycbwtJTUO3gbcMrlAwsn1feWxyp7Rw2cxpfe1bOT9v2rxmQHa2Tlc6pFNWAjU6ZAdlD6kFQ/exec";
   var PROGRESS_WORKER_URL = "https://mrj-progress-packs.canadianvegetarian.workers.dev";
   var PROGRESS_WORKER_KEY = "fe492cacc6396c4afa89768a3678da0d23faaab42741b5a6d4d193e7842ed0cc";
   var PROGRESS_WORKER_TIMEOUT_MS = 4000;
+  var CF_LOGIN_TIMEOUT_MS = 2500;
+  var LOGIN_MODE_DEFAULT = "shadow";
+  var TOKEN_PENDING = "token_pending";
   var SESSION_KEY = "mrj.auth.session";
   var NOTE_OUTBOX_PREFIX = "mrj.auth.noteOutbox.";
   var NOTE_OUTBOX_MAX = 300;
@@ -207,7 +210,33 @@
   var busy = false;
   var loginFlightSeq = 0;
   var activeLoginFlight = null;
+  var gasTokenPromise_ = null;
   var storageListenerInstalled = false;
+
+  function resolveLoginMode_() {
+    try {
+      var search = global.location && global.location.search ? String(global.location.search) : "";
+      var match = search.match(/[?&]mrjlogin=([^&]+)/);
+      if (match) {
+        var fromQs = decodeURIComponent(match[1]).trim().toLowerCase();
+        if (fromQs === "gas" || fromQs === "shadow" || fromQs === "cf_first") return fromQs;
+      }
+    } catch (ignoreQs) {}
+    try {
+      var stored = global.localStorage.getItem("mrj_login_mode");
+      if (stored) {
+        var fromStore = String(stored).trim().toLowerCase();
+        if (fromStore === "gas" || fromStore === "shadow" || fromStore === "cf_first") return fromStore;
+      }
+    } catch (ignoreStore) {}
+    return LOGIN_MODE_DEFAULT;
+  }
+
+  var LOGIN_MODE = resolveLoginMode_();
+
+  function loginMode_() {
+    return LOGIN_MODE;
+  }
 
   function delay_(ms) {
     return new Promise(function (resolve) {
@@ -257,7 +286,7 @@
     return Promise.race([req, timedOut]);
   }
 
-  function workerPostJson_(path, body) {
+  function workerPostJson_(path, body, timeoutMs) {
     var url = PROGRESS_WORKER_URL + path;
     var opts = {
       method: "POST",
@@ -269,13 +298,14 @@
     };
     var ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
     if (ctrl) opts.signal = ctrl.signal;
+    var ms = timeoutMs == null ? PROGRESS_WORKER_TIMEOUT_MS : timeoutMs;
     var timedOut = new Promise(function (_, reject) {
       setTimeout(function () {
         if (ctrl) ctrl.abort();
         var err = new Error("timeout");
         err.kind = "timeout";
         reject(err);
-      }, PROGRESS_WORKER_TIMEOUT_MS);
+      }, ms);
     });
     var req = fetch(url, opts).then(function (res) {
       return res.text().then(function (text) {
@@ -396,28 +426,149 @@
     return chartLibsPromise;
   }
 
+  function whenGasTokenReady_() {
+    if (state.token !== TOKEN_PENDING) return Promise.resolve(state.token);
+    if (gasTokenPromise_) {
+      return gasTokenPromise_.then(function (tok) {
+        return tok || state.token;
+      });
+    }
+    return Promise.resolve(state.token);
+  }
+
+  function startBackgroundGasToken_(id, password, hook) {
+    gasTokenPromise_ = post_(attachClientMeta_({ action: "login", id: id, password: password }), hook || {})
+      .then(function (data) {
+        if (data && data.ok && data.token) {
+          if (state.id && rules.idKey(state.id) === rules.idKey(id)) {
+            state.token = String(data.token);
+            if (data.role) applyServerRole_(data.role);
+            saveSession_();
+          }
+          return String(data.token);
+        }
+        return null;
+      })
+      .catch(function () {
+        return null;
+      });
+    return gasTokenPromise_;
+  }
+
+  function loginResultLabel_(data) {
+    if (!data) return "error";
+    if (data.ok) return "ok";
+    if (data.error != null && String(data.error) !== "") return String(data.error);
+    return "error";
+  }
+
+  function cfShouldFallbackToGas_(cf) {
+    if (!cf) return true;
+    if (cf.ok === true) return false;
+    var err = cf.error == null ? "" : String(cf.error);
+    if (err === "wrong_password" || err === "user_does_not_exist" || err === "id_blocked" || err === "blank") {
+      return false;
+    }
+    return true;
+  }
+
+  function cfLogin_(id, password) {
+    var t0 = Date.now();
+    return workerPostJson_(
+      "/auth/login",
+      { id: id, password: password },
+      CF_LOGIN_TIMEOUT_MS
+    )
+      .then(function (res) {
+        var cfMs = Date.now() - t0;
+        if (!res) return { ok: false, error: "cf_unknown", cf_ms: cfMs };
+        if (res.status >= 500) {
+          return { ok: false, error: "cf_server", cf_ms: cfMs, status: res.status };
+        }
+        var data = res.data;
+        if (!data || typeof data !== "object") {
+          return { ok: false, error: "cf_unknown", cf_ms: cfMs };
+        }
+        if (data.cf_ms == null) data.cf_ms = cfMs;
+        return data;
+      })
+      .catch(function (err) {
+        var cfMs = Date.now() - t0;
+        if (err && err.kind === "timeout") {
+          return { ok: false, error: "cf_timeout", cf_ms: cfMs };
+        }
+        return { ok: false, error: "cf_unknown", cf_ms: cfMs };
+      });
+  }
+
+  function shadowLog_(idKey, cfResult, gasResult, cfMs) {
+    workerPostJson_(
+      "/auth/shadow_log",
+      {
+        id_key: idKey,
+        cf_result: cfResult,
+        gas_result: gasResult,
+        cf_ms: cfMs == null ? 0 : cfMs
+      },
+      CF_LOGIN_TIMEOUT_MS
+    ).catch(function () {});
+  }
+
+  function verifyTeacherPin_(pin) {
+    return workerPostJson_("/auth/teacher_pin", { pin: pin }, CF_LOGIN_TIMEOUT_MS)
+      .then(function (res) {
+        if (res && res.httpOk && res.data && res.data.ok) return res.data;
+        return null;
+      })
+      .catch(function () {
+        return null;
+      })
+      .then(function (cfData) {
+        if (cfData && cfData.ok) return cfData;
+        return post_({ action: "study_teacher_check", pin: pin });
+      });
+  }
+
   function post_(body, hook) {
     var action = body && body.action ? String(body.action) : "";
     if (action === "login" || action === "register") {
       body = attachClientMeta_(body);
     }
-    var plan = retryPlan_(action);
-    function runAttempt(index) {
-      return postOnce_(body, REQUEST_TIMEOUT_MS).then(function (data) {
-        if (!shouldRetryResponse_(data) || index >= plan.attempts - 1) return data;
-        if (hook && typeof hook.onRetry === "function") hook.onRetry(index + 1, MESSAGES.server_busy);
-        return delay_(plan.delays[index + 1] || 1500).then(function () {
-          return runAttempt(index + 1);
+    function runPost_(effectiveBody) {
+      var act = effectiveBody && effectiveBody.action ? String(effectiveBody.action) : action;
+      var plan = retryPlan_(act);
+      function runAttempt(index) {
+        return postOnce_(effectiveBody, REQUEST_TIMEOUT_MS).then(function (data) {
+          if (!shouldRetryResponse_(data) || index >= plan.attempts - 1) return data;
+          if (hook && typeof hook.onRetry === "function") hook.onRetry(index + 1, MESSAGES.server_busy);
+          return delay_(plan.delays[index + 1] || 1500).then(function () {
+            return runAttempt(index + 1);
+          });
+        }).catch(function (err) {
+          if (index >= plan.attempts - 1) throw err;
+          if (hook && typeof hook.onRetry === "function") hook.onRetry(index + 1, MESSAGES.server_busy);
+          return delay_(plan.delays[index + 1] || 1500).then(function () {
+            return runAttempt(index + 1);
+          });
         });
-      }).catch(function (err) {
-        if (index >= plan.attempts - 1) throw err;
-        if (hook && typeof hook.onRetry === "function") hook.onRetry(index + 1, MESSAGES.server_busy);
-        return delay_(plan.delays[index + 1] || 1500).then(function () {
-          return runAttempt(index + 1);
-        });
+      }
+      return runAttempt(0);
+    }
+    if (body && String(body.token) === TOKEN_PENDING) {
+      return whenGasTokenReady_().then(function (tok) {
+        if (!tok || String(tok) === TOKEN_PENDING) {
+          return Promise.resolve({ ok: false, error: "bad_token" });
+        }
+        var pendingBody = {};
+        var pk;
+        for (pk in body) {
+          if (Object.prototype.hasOwnProperty.call(body, pk)) pendingBody[pk] = body[pk];
+        }
+        pendingBody.token = tok;
+        return runPost_(pendingBody);
       });
     }
-    return runAttempt(0);
+    return runPost_(body);
   }
 
   function installStorageListener_() {
@@ -993,10 +1144,7 @@
         var secret = input.value;
         teacherUnlockBusy = true;
         submit.disabled = true;
-        post_({
-          action: "study_teacher_check",
-          pin: secret
-        }).then(function (data) {
+        verifyTeacherPin_(secret).then(function (data) {
           teacherUnlockBusy = false;
           submit.disabled = false;
           if (data && data.ok) {
@@ -1036,6 +1184,7 @@
     loadPlaceSeq += 1;
     busy = false;
     activeLoginFlight = null;
+    gasTokenPromise_ = null;
     state = { id: "", token: "", role: "", progress: [], progressError: "" };
     packState = {};
     teacherChromeApplied_ = false;
@@ -1090,9 +1239,7 @@
           return;
         }
         renderStatus_(MESSAGES.checking);
-        send_({ action: "login", id: id, password: password }, function (data) {
-          finish_(data.id || id, data.token, data.progress, "", data.role);
-        }, function (msg) {
+        performLoginSubmit_(id, password, entered, function (msg) {
           renderLogin_(msg, entered);
         });
       },
@@ -1255,6 +1402,112 @@
       renderDoors_("Didn't save. Try again.");
     });
     rootEl.appendChild(again);
+  }
+
+  function finishLoginFromGas_(data, flightId, id, showError) {
+    var stillCurrent = activeLoginFlight && activeLoginFlight.id === flightId;
+    if (data && data.ok && data.token) {
+      if (activeLoginFlight && activeLoginFlight.id !== flightId) return;
+      activeLoginFlight = null;
+      busy = false;
+      setBusy_(false);
+      loadPlace_(data.id || id, data.token, data.role);
+      return;
+    }
+    if (!stillCurrent) return;
+    activeLoginFlight = null;
+    busy = false;
+    setBusy_(false);
+    showError(errorText_(data));
+  }
+
+  function performLoginSubmit_(id, password, entered, showError) {
+    var mode = loginMode_();
+    if (mode === "gas") {
+      send_({ action: "login", id: id, password: password }, function () {}, showError);
+      return;
+    }
+    var flightId = ++loginFlightSeq;
+    activeLoginFlight = { id: flightId, body: { action: "login", id: id, password: password } };
+    busy = true;
+    setBusy_(true);
+    var hook = {
+      onRetry: function () {
+        if (activeLoginFlight && activeLoginFlight.id === flightId) {
+          renderStatus_(MESSAGES.server_busy);
+        }
+      }
+    };
+    if (mode === "shadow") {
+      var cfPromise = cfLogin_(id, password);
+      var gasPromise = post_(attachClientMeta_({ action: "login", id: id, password: password }), hook);
+      Promise.all([cfPromise, gasPromise])
+        .then(function (pair) {
+          var cf = pair[0];
+          var gas = pair[1];
+          shadowLog_(
+            rules.idKey(id),
+            loginResultLabel_(cf),
+            loginResultLabel_(gas),
+            cf && cf.cf_ms != null ? cf.cf_ms : 0
+          );
+          finishLoginFromGas_(gas, flightId, id, showError);
+        })
+        .catch(function () {
+          var stillCurrent = activeLoginFlight && activeLoginFlight.id === flightId;
+          if (!stillCurrent) return;
+          activeLoginFlight = null;
+          busy = false;
+          setBusy_(false);
+          showError(MESSAGES.server_busy.replace("trying again…", "Please try again in a moment."));
+        });
+      return;
+    }
+    cfLogin_(id, password)
+      .then(function (cf) {
+        if (!activeLoginFlight || activeLoginFlight.id !== flightId) return;
+        if (cf && cf.ok) {
+          activeLoginFlight = null;
+          busy = false;
+          setBusy_(false);
+          startBackgroundGasToken_(id, password, hook);
+          loadPlace_(cf.id || id, TOKEN_PENDING, cf.role || "");
+          return;
+        }
+        if (!cfShouldFallbackToGas_(cf)) {
+          activeLoginFlight = null;
+          busy = false;
+          setBusy_(false);
+          showError(errorText_(cf));
+          return;
+        }
+        post_(attachClientMeta_({ action: "login", id: id, password: password }), hook)
+          .then(function (gas) {
+            finishLoginFromGas_(gas, flightId, id, showError);
+          })
+          .catch(function () {
+            var stillCurrent = activeLoginFlight && activeLoginFlight.id === flightId;
+            if (!stillCurrent) return;
+            activeLoginFlight = null;
+            busy = false;
+            setBusy_(false);
+            showError(MESSAGES.server_busy.replace("trying again…", "Please try again in a moment."));
+          });
+      })
+      .catch(function () {
+        post_(attachClientMeta_({ action: "login", id: id, password: password }), hook)
+          .then(function (gas) {
+            finishLoginFromGas_(gas, flightId, id, showError);
+          })
+          .catch(function () {
+            var stillCurrent = activeLoginFlight && activeLoginFlight.id === flightId;
+            if (!stillCurrent) return;
+            activeLoginFlight = null;
+            busy = false;
+            setBusy_(false);
+            showError(MESSAGES.server_busy.replace("trying again…", "Please try again in a moment."));
+          });
+      });
   }
 
   function send_(body, onOk, showError) {
@@ -3604,7 +3857,16 @@
       applyServerRole: applyServerRole_,
       isTeacher: isTeacher,
       noteOutboxKey: noteOutboxStorageKey_,
-      readNoteOutbox: readNoteOutbox_
+      readNoteOutbox: readNoteOutbox_,
+      cfLogin: cfLogin_,
+      cfShouldFallbackToGas: cfShouldFallbackToGas_,
+      loginMode: loginMode_,
+      performLoginSubmit: performLoginSubmit_,
+      shadowLog: shadowLog_,
+      verifyTeacherPin: verifyTeacherPin_,
+      whenGasTokenReady: whenGasTokenReady_,
+      TOKEN_PENDING: TOKEN_PENDING,
+      LOGIN_MODE: LOGIN_MODE
     };
   }
 

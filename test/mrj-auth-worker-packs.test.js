@@ -48,7 +48,7 @@ describe("mrj-auth Worker-first progress packs", () => {
         assert.equal(b.program, "decodable");
         assert.equal(
           opts.headers["X-MRJ-Progress-Key"],
-          "REPLACE_STAGING_KEY"
+          "fe492cacc6396c4afa89768a3678da0d23faaab42741b5a6d4d193e7842ed0cc"
         );
         return workerJsonResponse({
           ok: true,

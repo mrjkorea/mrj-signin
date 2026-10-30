@@ -156,9 +156,10 @@ function mkNode(tag, className) {
   return n;
 }
 
-function loadMrjAuth(fetchImpl, session, timeoutMs) {
+function loadMrjAuth(fetchImpl, session, timeoutMs, loginMode) {
   const storage = {};
   if (session) storage["mrj.auth.session"] = JSON.stringify(session);
+  if (loginMode) storage["mrj_login_mode"] = String(loginMode);
   const root = mkNode("div");
   const body = mkNode("body");
   body.querySelectorAll = function (sel) {
