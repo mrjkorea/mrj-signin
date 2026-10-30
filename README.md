@@ -2,7 +2,7 @@
 
 Browser sign-in and score history for MRJ classroom apps on GitHub Pages.
 
-**Current client version:** `20261030-cf-login-1.7.2-gas` (`MRJ_AUTH.AUTH_VERSION` / `MRJSignin`)
+**Current client version:** `20261030-cf-login-1.7.3` (`MRJ_AUTH.AUTH_VERSION` / `MRJSignin`)
 
 ## Load in an app
 
