@@ -29,10 +29,10 @@ function scriptBody(opts) {
 }
 
 describe("mrj-auth Cloudflare login modes", () => {
-  it("defaults LOGIN_MODE to cf_first and exposes AUTH_VERSION", () => {
+  it("defaults LOGIN_MODE to gas and exposes AUTH_VERSION", () => {
     const { auth } = loadMrjAuth(() => Promise.resolve({ text: () => Promise.resolve("{}") }), null, 200);
-    assert.equal(auth.AUTH_VERSION, "20261030-cf-login-1.7.1");
-    assert.equal(auth._test.loginMode(), "cf_first");
+    assert.equal(auth.AUTH_VERSION, "20261030-cf-login-1.7.2-gas");
+    assert.equal(auth._test.loginMode(), "gas");
   });
 
   it("cfShouldFallbackToGas is false for definitive CF auth errors", () => {
