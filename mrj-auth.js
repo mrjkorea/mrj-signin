@@ -7,13 +7,13 @@
 (function (global) {
   "use strict";
 
-  var AUTH_VERSION = "20261030-cf-login-1.7.2-gas";
+  var AUTH_VERSION = "20261030-cf-login-1.7.3";
   var ENDPOINT = "https://script.google.com/macros/s/AKfycbwtJTUO3gbcMrlAwsn1feWxyp7Rw2cxpfe1bOT9v2rxmQHa2Tlc6pFNWAjU6ZAdlD6kFQ/exec";
   var PROGRESS_WORKER_URL = "https://mrj-progress-packs.canadianvegetarian.workers.dev";
   var PROGRESS_WORKER_KEY = "fe492cacc6396c4afa89768a3678da0d23faaab42741b5a6d4d193e7842ed0cc";
   var PROGRESS_WORKER_TIMEOUT_MS = 4000;
   var CF_LOGIN_TIMEOUT_MS = 2500;
-  var LOGIN_MODE_DEFAULT = "gas";
+  var LOGIN_MODE_DEFAULT = "cf_first";
   var TOKEN_PENDING = "token_pending";
   var SESSION_KEY = "mrj.auth.session";
   var NOTE_OUTBOX_PREFIX = "mrj.auth.noteOutbox.";
