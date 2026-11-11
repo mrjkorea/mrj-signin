@@ -355,6 +355,16 @@ html.mrj-auth-locked body {
   max-width: min(18rem, 92vw);
 }
 
+/* A hidden student chrome must not paint (Reg/Metrics 2026-11-11). `display:inline-flex`
+   above beats the browser's own [hidden] rule, so a signed-out page kept an empty box and
+   the Teacher button inside it. Same pattern as #mrj-auth-gate[hidden] and the panel root. */
+.mrj-auth-chip-chrome[hidden],
+.mrj-auth-chip-chrome [hidden],
+.mrj-auth-teacher-btn[hidden],
+#mrj-auth-student-chip[hidden] {
+  display: none !important;
+}
+
 .mrj-auth-teacher-btn {
   flex-shrink: 0;
   min-height: 2.5rem;

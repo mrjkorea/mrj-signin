@@ -623,7 +623,10 @@
 
   function chipDisabled_() {
     try {
-      if (options && options.chipOff === true) return true;
+      // chromeOff is the name app owners should use: it covers the student chip, the progress
+      // pill AND the Teacher button. chipOff stays a working alias so existing callers are
+      // fixed without a code change (Reg/Metrics 2026-11-11).
+      if (options && (options.chipOff === true || options.chromeOff === true)) return true;
       var doc = global.document;
       if (!doc || !doc.documentElement) return false;
       var script = doc.currentScript;
@@ -961,6 +964,12 @@
     return state.token || "";
   }
 
+  function teacherButtonAllowed_() {
+    if (chipDisabled_()) return false;
+    if (options && options.teacherButton === false) return false;
+    return true;
+  }
+
   function isTeacher() {
     return state.role === "teacher";
   }
@@ -1019,7 +1028,10 @@
   function syncTeacherButton_() {
     ensureTeacherButton_();
     if (!teacherBtnEl) return;
-    if (!state.id) {
+    // A page that asks for no student chrome must never paint the Teacher button either:
+    // a student on an open page has no teacher tools to find, and a stray button is a leak.
+    // teacherButton: false hides it on pages that keep the chip (Reg/Metrics 2026-11-11).
+    if (!state.id || !teacherButtonAllowed_()) {
       teacherBtnEl.hidden = true;
       return;
     }
@@ -3128,6 +3140,7 @@
       if (findOwnRecord_()) {
         setChipHidden_(true);
         applyChipBodySlot_(0);
+        if (teacherBtnEl) teacherBtnEl.hidden = true;
         return;
       }
       if (!chipDisabled_()) {
@@ -3144,6 +3157,7 @@
       if (chipDisabled_()) {
         setChipHidden_(true);
         applyChipBodySlot_(0);
+        if (teacherBtnEl) teacherBtnEl.hidden = true;
         return;
       }
       setChipHidden_(false);
